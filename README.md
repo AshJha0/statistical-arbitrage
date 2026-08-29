@@ -1,4 +1,4 @@
-# 09 — Statistical Arbitrage (Cointegration, Kalman Filter, Pairs Backtest)
+# Statistical Arbitrage (Cointegration, Kalman Filter, Pairs Backtest)
 
 A self-contained statistical-arbitrage toolkit implemented four times — Python
 (reference), C++17, Rust, and Java 21 — against one pinned numerical contract
