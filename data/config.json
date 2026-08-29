@@ -1,0 +1,14 @@
+{
+  "window": 60,
+  "entry_z": 2.0,
+  "exit_z": 0.5,
+  "stop_z": 4.0,
+  "cost_bps": 1.0,
+  "slippage_bps": 0.5,
+  "capital": 1000000.0,
+  "insample_frac": 0.6,
+  "adf_maxlag": 1,
+  "significance": 0.05,
+  "kalman_delta": 0.0001,
+  "kalman_r": 0.001
+}

@@ -1,0 +1,24 @@
+flowchart TD
+    subgraph inputs [Bundled inputs]
+        CSV["pair_equity.csv / fx_triangle.csv / random_walks.csv"]
+        CFG["config.json"]
+    end
+    CSV --> IO["data_io: load_csv"]
+    CFG --> IOC["data_io: load_config"]
+    IO --> EG["engle_granger\n(hedge alpha, beta + residual ADF)"]
+    IO --> JO["johansen_trace\n(rank, cointegrating vectors)"]
+    IO --> KF["kalman_hedge\n(dynamic alpha_t, beta_t, innovations)"]
+    EG -- "not cointegrated" --> STOPX["no trade\n(spurious pair rejected)"]
+    EG -- "alpha, beta" --> SPR["signals: spread\ns = y - (a + b x)"]
+    EG -- "residuals" --> HL["signals: half_life"]
+    SPR --> Z["signals: rolling_zscore\n(window W, ddof 1)"]
+    IOC --> BTCFG["BacktestConfig\n(validated thresholds, costs)"]
+    Z --> BT["backtest_pair\nstate machine + accounting"]
+    BTCFG --> BT
+    BT --> MET["metrics: return, Sharpe,\nmaxDD, trades, turnover"]
+    IO --> WF["walk_forward\n(60% fit / 40% trade)"]
+    WF --> BT
+    MET --> GOLD["golden.json\n21 cross-language cases"]
+    JO --> GOLD
+    KF --> GOLD
+    HL --> GOLD

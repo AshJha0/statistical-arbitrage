@@ -1,0 +1,80 @@
+classDiagram
+    class OLSResult {
+        +params : vector
+        +se : vector
+        +tstats : vector
+        +resid : vector
+        +r2 : double
+        +sigma2 : double
+        +nobs : int
+        +nparams : int
+    }
+    class ADFResult {
+        +tstat : double
+        +pvalue : double
+        +crit : map
+        +maxlag : int
+        +nvars : int
+        +reject(alpha) bool
+    }
+    class EGResult {
+        +alpha : double
+        +beta : double
+        +resid : vector
+        +r2 : double
+        +adf : ADFResult
+        +cointegrated(alpha) bool
+    }
+    class JohansenResult {
+        +eigenvalues : vector
+        +trace_stats : vector
+        +crit_95 : vector
+        +rank : int
+        +beta : matrix
+        +t_eff : int
+    }
+    class KalmanResult {
+        +alpha : vector
+        +beta : vector
+        +z : vector
+        +innovation : vector
+        +s_var : vector
+        +final_cov : matrix2x2
+    }
+    class BacktestConfig {
+        +window : int
+        +entry_z : double
+        +exit_z : double
+        +stop_z : double
+        +cost_bps : double
+        +slippage_bps : double
+        +capital : double
+    }
+    class Trade {
+        +entry_day : int
+        +exit_day : int
+        +direction : int
+        +pnl : double
+        +stopped : bool
+    }
+    class BacktestResult {
+        +equity : vector
+        +daily_pnl : vector
+        +daily_cost : vector
+        +zscore : vector
+        +trades : List~Trade~
+        +metrics : map
+    }
+    class WalkForwardResult {
+        +alpha : double
+        +beta : double
+        +split : int
+        +insample : BacktestResult
+        +oos : BacktestResult
+    }
+    EGResult --> ADFResult : nests
+    EGResult ..> OLSResult : built from
+    ADFResult ..> OLSResult : t-stat from
+    BacktestResult --> Trade : collects
+    WalkForwardResult --> BacktestResult : IS + OOS
+    BacktestResult ..> BacktestConfig : parameterised by

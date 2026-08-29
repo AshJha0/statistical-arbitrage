@@ -1,0 +1,245 @@
+{
+  "cases": [
+    {
+      "name": "ols_pair_alpha",
+      "inputs": {
+        "data": "pair_equity.csv"
+      },
+      "expect": {
+        "value": 13.299426653212937
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "ols_pair_beta",
+      "inputs": {
+        "data": "pair_equity.csv"
+      },
+      "expect": {
+        "value": 1.5177899204175462
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "ols_pair_r2",
+      "inputs": {
+        "data": "pair_equity.csv"
+      },
+      "expect": {
+        "value": 0.13854679070018194
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "adf_resid_insample_tstat",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": -5.824361868645694
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "eg_pair_insample_coint",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": 1.0
+      },
+      "tol": 1e-09
+    },
+    {
+      "name": "adf_random_walk_tstat",
+      "inputs": {
+        "data": "random_walks.csv",
+        "column": "walk_a"
+      },
+      "expect": {
+        "value": -1.0945173608030683
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "adf_random_walk_reject",
+      "inputs": {
+        "data": "random_walks.csv",
+        "column": "walk_a"
+      },
+      "expect": {
+        "value": 0.0
+      },
+      "tol": 1e-09
+    },
+    {
+      "name": "eg_spurious_coint",
+      "inputs": {
+        "data": "random_walks.csv"
+      },
+      "expect": {
+        "value": 0.0
+      },
+      "tol": 1e-09
+    },
+    {
+      "name": "johansen_pair_trace_r0",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": 37.57216989082278
+      },
+      "tol": 1e-06
+    },
+    {
+      "name": "johansen_pair_trace_r1",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": 3.4595318850434515
+      },
+      "tol": 1e-06
+    },
+    {
+      "name": "johansen_pair_rank",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": 1.0
+      },
+      "tol": 1e-09
+    },
+    {
+      "name": "halflife_insample_spread",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": 8.390964850025627
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "kalman_beta_day500",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "delta": 0.0001,
+        "r": 0.001,
+        "day": 500
+      },
+      "expect": {
+        "value": 1.6920557086833978
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "kalman_beta_day1200",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "delta": 0.0001,
+        "r": 0.001,
+        "day": 1200
+      },
+      "expect": {
+        "value": 1.1001174415602801
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "kalman_beta_final",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "delta": 0.0001,
+        "r": 0.001,
+        "day": 1499
+      },
+      "expect": {
+        "value": 1.1531890356678272
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "zscore_day200",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "window": 60,
+        "insample_days": 900,
+        "day": 200
+      },
+      "expect": {
+        "value": -1.1720390869030097
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "zscore_day1100",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "window": 60,
+        "insample_days": 900,
+        "day": 1100
+      },
+      "expect": {
+        "value": -1.1036131529052826
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "backtest_total_return",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "config": "config.json",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": -0.019113159906490356
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "backtest_sharpe",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "config": "config.json",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": -0.13746920168920979
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "backtest_max_drawdown",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "config": "config.json",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": 0.14255409657409998
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "backtest_n_trades",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "config": "config.json",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": 31.0
+      },
+      "tol": 1e-09
+    }
+  ]
+}

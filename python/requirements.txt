@@ -1,0 +1,6 @@
+# package runtime: numpy only (the statarb package is self-contained)
+numpy>=1.24
+
+# tests only
+pytest>=7.0
+statsmodels>=0.13   # cross-checks in tests; NEVER imported by the package

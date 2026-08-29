@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant P as Prices day t
+    participant BT as backtest_pair
+    participant SM as State machine
+    participant EQ as Equity ledger
+    P->>BT: y_t, x_t
+    BT->>EQ: 1. mark-to-market pnl_t (quantities from day t-1)
+    BT->>SM: 2. execute pending order (decided at close t-1)
+    SM-->>EQ: entry/exit costs on traded notional
+    alt t == T-1 and position open
+        BT->>SM: 2b. force-close at final close
+        SM-->>EQ: exit cost, Trade appended
+    end
+    BT->>EQ: E_t = E_(t-1) + pnl_t - cost_t
+    alt t < T-1
+        BT->>SM: 3. evaluate z_t, set at most one pending order
+        Note over SM: FLAT: entry if entry_z <= |z| < stop_z<br/>in position: stop if |z| >= stop_z, exit if |z| <= exit_z<br/>NaN z: no action
+    end
