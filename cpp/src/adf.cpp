@@ -9,12 +9,26 @@
 
 namespace statarb {
 
-const AdfCriticalRow& adf_critical_values(int nvars) {
-    // MacKinnon-style asymptotic values, constant no-trend case.  PINNED.
-    static const AdfCriticalRow kTable[3] = {
-        {-3.43, -2.86, -2.57},  // nvars = 1: plain ADF on one series
-        {-3.90, -3.34, -3.04},  // nvars = 2: EG residual test, 2 vars
-        {-4.29, -3.74, -3.45},  // nvars = 3: EG residual test, 3 vars
+const AdfSurfaceRow* adf_response_surface(int nvars) {
+    // MacKinnon (2010), "Critical Values for Cointegration Tests", Queen's
+    // Economics Dept. WP 1227, Table 1, constant / no-trend case.
+    // Rows: 1%, 5%, 10%; columns: b_inf, b1, b2, b3.  PINNED verbatim.
+    static const AdfSurfaceRow kTable[3][3] = {
+        {   // nvars = 1: plain ADF on one series
+            {-3.43035, -6.5393, -16.786, -79.433},
+            {-2.86154, -2.8903, -4.234, -40.040},
+            {-2.56677, -1.5384, -2.809, 0.0},
+        },
+        {   // nvars = 2: EG residual test, 2 vars
+            {-3.89644, -10.9519, -33.527, 0.0},
+            {-3.33613, -6.1101, -6.823, 0.0},
+            {-3.04445, -4.2412, -2.720, 0.0},
+        },
+        {   // nvars = 3: EG residual test, 3 vars
+            {-4.29374, -14.4354, -33.195, 47.433},
+            {-3.74066, -8.5632, -10.852, 27.982},
+            {-3.45218, -6.2143, -3.718, 0.0},
+        },
     };
     if (nvars < 1 || nvars > 3) {
         throw std::invalid_argument("nvars must be 1, 2 or 3");
@@ -22,8 +36,33 @@ const AdfCriticalRow& adf_critical_values(int nvars) {
     return kTable[nvars - 1];
 }
 
-double interpolate_pvalue(double tstat, int nvars) {
-    const AdfCriticalRow& cv = adf_critical_values(nvars);
+AdfCriticalRow adf_critical_values(int nvars) {
+    const AdfSurfaceRow* rows = adf_response_surface(nvars);
+    return AdfCriticalRow{rows[0].b_inf, rows[1].b_inf, rows[2].b_inf};
+}
+
+AdfCriticalRow adf_critical_values(int nvars, std::size_t nobs) {
+    const AdfSurfaceRow* rows = adf_response_surface(nvars);
+    if (nobs < kAdfMinNobs) {
+        throw std::invalid_argument("critical values need at least " +
+                                    std::to_string(kAdfMinNobs) +
+                                    " effective observations");
+    }
+    const double inv = 1.0 / static_cast<double>(nobs);
+    double cv[3];
+    for (int i = 0; i < 3; ++i) {
+        // Horner form, identical to the Python reference.
+        cv[i] = rows[i].b_inf + inv * (rows[i].b1 + inv * (rows[i].b2 + inv * rows[i].b3));
+    }
+    return AdfCriticalRow{cv[0], cv[1], cv[2]};
+}
+
+namespace {
+
+double interpolate_through(double tstat, const AdfCriticalRow& cv) {
+    if (std::isnan(tstat)) {
+        throw std::invalid_argument("tstat must not be NaN");
+    }
     double p;
     if (tstat <= cv.cv5) {
         // segment through (cv1, 0.01) and (cv5, 0.05)
@@ -35,6 +74,16 @@ double interpolate_pvalue(double tstat, int nvars) {
         p = 0.05 + slope * (tstat - cv.cv5);
     }
     return std::min(std::max(p, kPValueMin), kPValueMax);
+}
+
+}  // namespace
+
+double interpolate_pvalue(double tstat, int nvars) {
+    return interpolate_through(tstat, adf_critical_values(nvars));
+}
+
+double interpolate_pvalue(double tstat, int nvars, std::size_t nobs) {
+    return interpolate_through(tstat, adf_critical_values(nvars, nobs));
 }
 
 bool ADFResult::reject(double alpha) const {
@@ -49,20 +98,26 @@ ADFResult adf_test(const std::vector<double>& y, int maxlag, int nvars) {
     if (maxlag < 0) {
         throw std::invalid_argument("maxlag must be an integer >= 0");
     }
-    const AdfCriticalRow& crit = adf_critical_values(nvars);  // validates nvars
+    if (maxlag > kAdfMaxLag) {
+        throw std::invalid_argument("maxlag must be <= " + std::to_string(kAdfMaxLag));
+    }
+    adf_response_surface(nvars);  // validates nvars
     if (!all_finite(y)) {
         throw std::invalid_argument("inputs must be finite (no NaN/inf)");
     }
     const std::size_t t_len = y.size();
     const int p = maxlag;
-    const int nparams = 2 + p;  // c, rho, phi_1..phi_p
-    const long eff = static_cast<long>(t_len) - 1 - p;
-    if (t_len == 0 ||
+    // 64-bit arithmetic throughout: no overflow for any admissible maxlag.
+    const long long nparams = 2LL + p;  // c, rho, phi_1..phi_p
+    const long long eff = static_cast<long long>(t_len) - 1 - p;
+    if (t_len > 0 &&
         *std::max_element(y.begin(), y.end()) ==
             *std::min_element(y.begin(), y.end())) {
         throw std::invalid_argument("series is constant: ADF test undefined");
     }
-    if (eff < nparams + 10) {
+    const long long min_eff =
+        std::max(nparams + 10, static_cast<long long>(kAdfMinNobs));
+    if (eff < min_eff) {
         throw std::invalid_argument("series too short for ADF with maxlag=" +
                                     std::to_string(p) + ": effective nobs " +
                                     std::to_string(eff));
@@ -88,8 +143,8 @@ ADFResult adf_test(const std::vector<double>& y, int maxlag, int nvars) {
 
     ADFResult res;
     res.tstat = fit.tstats[1];  // rho is first regressor after the intercept
-    res.pvalue = interpolate_pvalue(res.tstat, nvars);
-    res.crit = crit;
+    res.crit = adf_critical_values(nvars, rows);
+    res.pvalue = interpolate_pvalue(res.tstat, nvars, rows);
     res.maxlag = p;
     res.nobs = rows;
     res.nvars = nvars;

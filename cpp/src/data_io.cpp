@@ -1,6 +1,7 @@
 #include "statarb/data_io.hpp"
 
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -50,14 +51,25 @@ std::map<std::string, std::vector<double>> load_csv(const std::string& path) {
     std::string line;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (!trim(line).empty()) lines.push_back(line);
+        lines.push_back(line);
     }
+    // Drop leading/trailing blank lines only (mirrors Python's strip());
+    // an interior blank line is a ragged row, as in the other ports.
+    while (!lines.empty() && trim(lines.back()).empty()) lines.pop_back();
+    while (!lines.empty() && trim(lines.front()).empty()) lines.erase(lines.begin());
     if (lines.size() < 2) {
         throw std::invalid_argument("empty data file: " + path);
     }
     std::vector<std::string> header = split_csv_line(lines[0]);
     for (std::string& h : header) h = trim(h);
     const std::size_t ncol = header.size();
+    for (std::size_t a = 0; a < ncol; ++a) {
+        for (std::size_t b = a + 1; b < ncol; ++b) {
+            if (header[a] == header[b]) {
+                throw std::invalid_argument("duplicate column names in " + path);
+            }
+        }
+    }
 
     std::map<std::string, std::vector<double>> out;
     std::vector<std::vector<double>> cols(ncol);
@@ -75,7 +87,23 @@ std::map<std::string, std::vector<double>> load_csv(const std::string& path) {
                 throw std::invalid_argument("non-numeric value at row " +
                                             std::to_string(i + 1) + " in " + path);
             }
+            if (!std::isfinite(v)) {
+                throw std::invalid_argument("non-finite value at row " +
+                                            std::to_string(i + 1) + " in " + path);
+            }
             cols[j].push_back(v);
+        }
+    }
+    for (std::size_t j = 0; j < ncol; ++j) {
+        if (header[j] == kDayColumn) {
+            const std::vector<double>& day = cols[j];
+            for (std::size_t i = 1; i < day.size(); ++i) {
+                if (!(day[i] > day[i - 1])) {
+                    throw std::invalid_argument(
+                        "day column must be strictly increasing (sorted, no duplicates) in " +
+                        path);
+                }
+            }
         }
     }
     for (std::size_t j = 0; j < ncol; ++j) out[header[j]] = std::move(cols[j]);
@@ -122,7 +150,9 @@ std::map<std::string, double> load_config(const std::string& path) {
         while (i < text.size() && text[i] != ',' && text[i] != '}') ++i;
         bool ok = false;
         const double v = parse_double(text.substr(vb, i - vb), ok);
-        if (!ok) throw fail("non-numeric value for key '" + key + "'");
+        if (!ok || !std::isfinite(v)) {
+            throw fail("value for key '" + key + "' is not a finite numeric scalar");
+        }
         cfg[key] = v;
         skip_ws();
         if (i >= text.size()) throw fail("unterminated object");

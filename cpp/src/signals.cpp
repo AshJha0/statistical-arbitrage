@@ -44,16 +44,15 @@ std::vector<double> rolling_zscore(const std::vector<double>& s, int window) {
     const std::size_t w = static_cast<std::size_t>(window);
     std::vector<double> z(t_len, std::numeric_limits<double>::quiet_NaN());
     for (std::size_t t = w - 1; t < t_len; ++t) {
-        long double sum = 0.0L;
-        for (std::size_t i = t - w + 1; i <= t; ++i) sum += s[i];
-        const double mean = static_cast<double>(sum / static_cast<long double>(w));
-        long double acc = 0.0L;
+        NeumaierSum sum;
+        for (std::size_t i = t - w + 1; i <= t; ++i) sum.add(s[i]);
+        const double mean = sum.value() / static_cast<double>(w);
+        NeumaierSum acc;
         for (std::size_t i = t - w + 1; i <= t; ++i) {
-            const long double d = static_cast<long double>(s[i]) - mean;
-            acc += d * d;
+            const double d = s[i] - mean;
+            acc.add(d * d);
         }
-        const double sd =
-            std::sqrt(static_cast<double>(acc) / static_cast<double>(w - 1));
+        const double sd = std::sqrt(acc.value() / static_cast<double>(w - 1));
         if (sd > kZscoreStdFloor) z[t] = (s[t] - mean) / sd;
     }
     return z;

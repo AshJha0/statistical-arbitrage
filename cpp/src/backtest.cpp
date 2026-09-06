@@ -23,8 +23,16 @@ BacktestConfig::BacktestConfig(int window_, double entry_z_, double exit_z_,
                                double slippage_bps_, double capital_)
     : window(window_), entry_z(entry_z_), exit_z(exit_z_), stop_z(stop_z_),
       cost_bps(cost_bps_), slippage_bps(slippage_bps_), capital(capital_) {
+    validate();
+}
+
+void BacktestConfig::validate() const {
     if (window < 2) {
         throw std::invalid_argument("window must be an integer >= 2");
+    }
+    if (!(std::isfinite(entry_z) && std::isfinite(exit_z) && std::isfinite(stop_z) &&
+          std::isfinite(cost_bps) && std::isfinite(slippage_bps))) {
+        throw std::invalid_argument("thresholds and costs must be finite");
     }
     if (!(0.0 <= exit_z && exit_z < entry_z && entry_z < stop_z)) {
         throw std::invalid_argument("require 0 <= exit_z < entry_z < stop_z");
@@ -49,9 +57,22 @@ Metrics compute_metrics(const std::vector<double>& equity, double capital,
                         const std::vector<Trade>& trades) {
     Metrics m;
     const std::size_t n = equity.size();
+    if (n == 0) {
+        throw std::invalid_argument("equity curve must be a non-empty 1-D array");
+    }
+    if (!all_finite(equity)) {
+        throw std::invalid_argument("equity curve must be finite (no NaN/inf)");
+    }
+    if (!(capital > 0.0) || !std::isfinite(capital)) {
+        throw std::invalid_argument("capital must be positive and finite");
+    }
     m.total_return = (equity.back() - capital) / capital;
+    // (1 + total)^(252/N) is undefined for equity <= 0: pin the total loss
+    // of capital (and worse) to an annualised return of exactly -1.
     m.ann_return =
-        std::pow(1.0 + m.total_return, 252.0 / static_cast<double>(n)) - 1.0;
+        m.total_return <= -1.0
+            ? -1.0
+            : std::pow(1.0 + m.total_return, 252.0 / static_cast<double>(n)) - 1.0;
 
     // daily_ret_t = (E_t - E_{t-1}) / capital with E_{-1} = capital.
     std::vector<double> daily_ret(n);
@@ -60,17 +81,10 @@ Metrics compute_metrics(const std::vector<double>& equity, double capital,
         daily_ret[t] = (equity[t] - prev) / capital;
     }
     if (n >= 2) {
-        long double sum = 0.0L;
-        for (double v : daily_ret) sum += v;
-        const double mean =
-            static_cast<double>(sum / static_cast<long double>(n));
-        long double acc = 0.0L;
-        for (double v : daily_ret) {
-            const long double d = static_cast<long double>(v) - mean;
-            acc += d * d;
-        }
-        const double sd =
-            std::sqrt(static_cast<double>(acc) / static_cast<double>(n - 1));
+        const double mean = compensated_sum(daily_ret) / static_cast<double>(n);
+        NeumaierSum acc;
+        for (double v : daily_ret) acc.add((v - mean) * (v - mean));
+        const double sd = std::sqrt(acc.value() / static_cast<double>(n - 1));
         m.sharpe = sd > 0.0 ? mean / sd * std::sqrt(252.0) : 0.0;
     } else {
         m.sharpe = 0.0;
@@ -104,6 +118,7 @@ BacktestResult backtest_pair(const std::vector<double>& y,
                              const std::vector<double>& x,
                              double alpha, double beta,
                              const BacktestConfig& config) {
+    config.validate();  // public members may have been mutated since construction
     if (y.size() != x.size() || y.empty()) {
         throw std::invalid_argument("y and x must be 1-D arrays of equal length");
     }
@@ -146,9 +161,11 @@ BacktestResult backtest_pair(const std::vector<double>& y,
         if (state != kFlat) open_pnl += pnl;
         double cost = 0.0;
 
-        // 2) execute the order decided at the day t-1 close
+        // 2) execute the order decided at the day t-1 close.  A pending
+        //    ENTRY on the final day is discarded (pinned): it could only be
+        //    force-closed at the same close, a phantom zero-day round trip.
         if (pending != Action::kNone) {
-            if (pending == Action::kEnter && state == kFlat) {
+            if (pending == Action::kEnter && state == kFlat && t + 1 < t_len) {
                 qy = pend_dir * (cap / 2.0) / y[t];
                 qx = -pend_dir * (cap / 2.0) / x[t];
                 const double traded = std::fabs(qy) * y[t] + std::fabs(qx) * x[t];
@@ -232,8 +249,9 @@ WalkForwardResult walk_forward(const std::vector<double>& y,
     if (y.size() != x.size()) {
         throw std::invalid_argument("y and x must be 1-D arrays of equal length");
     }
-    const std::size_t split = static_cast<std::size_t>(
-        static_cast<double>(y.size()) * insample_frac);
+    config.validate();
+    const std::size_t split = static_cast<std::size_t>(std::floor(
+        static_cast<double>(y.size()) * insample_frac + kSplitEps));
     const std::size_t w = static_cast<std::size_t>(std::max(config.window, 0));
     if (split < w || y.size() - split < w) {
         throw std::invalid_argument("each walk-forward segment must cover the z window");

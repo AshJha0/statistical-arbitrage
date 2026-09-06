@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>statistical-arbitrage — Cointegration tests, Kalman hedging and a pairs backtest in four languages</title>
+<!-- GitHub Pages landing page. If the repository is renamed, update the
+     github.com/AshJha0/statistical-arbitrage links below to match. -->
+<style>
+:root{--teal:#16697a;--green:#16a085;--ink:#1a1a2e;--muted:#556}
+body{font-family:'Segoe UI',Arial,sans-serif;margin:0;color:var(--ink);background:#f7f8fa}
+header{background:var(--teal);color:#fff;padding:3rem 2rem}
+header h1{margin:0 0 .5rem;font-size:2.2rem}
+header p{margin:0;max-width:52rem;opacity:.92;line-height:1.5}
+.wrap{max-width:64rem;margin:0 auto;padding:0 2rem}
+nav{margin-top:1.2rem}
+nav a{display:inline-block;background:var(--green);color:#fff;text-decoration:none;
+  padding:.55rem 1.1rem;margin:.25rem .6rem .25rem 0;border-radius:4px;font-weight:600}
+nav a.secondary{background:rgba(255,255,255,.15)}
+h2{color:var(--teal);border-bottom:2px solid #e3e8ec;padding-bottom:.3rem;margin-top:2.5rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(17rem,1fr));gap:1rem;margin:1.2rem 0}
+.card{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12);padding:1rem 1.2rem;border-radius:4px}
+.card h3{margin:.1rem 0 .5rem;font-size:1.02rem;color:var(--teal)}
+.card p{margin:0;font-size:.9rem;color:var(--muted);line-height:1.45}
+pre{background:#10222a;color:#d7e3ea;padding:1rem 1.2rem;border-radius:4px;overflow-x:auto;
+  font-size:.85rem;line-height:1.5}
+.numbers{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12);border-radius:4px;
+  padding:1rem 1.4rem;font-family:Consolas,monospace;font-size:.88rem;line-height:1.7}
+.numbers table{border-collapse:collapse}
+.numbers td{padding:.05rem 1.2rem .05rem 0;vertical-align:top}
+.numbers td:first-child{color:var(--teal);white-space:nowrap}
+.honest{background:#fff8ec;border-left:4px solid var(--green);padding:.8rem 1.2rem;
+  border-radius:4px;font-size:.92rem;line-height:1.55;margin:1.2rem 0}
+footer{margin:3rem 0 2rem;color:var(--muted);font-size:.85rem;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>statistical-arbitrage</h1>
+    <p>A self-contained statistical-arbitrage toolkit implemented four times — Python (reference), C++17, Rust and Java 21 — against one pinned numerical contract. OLS, the ADF unit-root test with MacKinnon (2010) finite-sample critical values, Engle–Granger, a Johansen-lite trace test with a native Cholesky + Jacobi eigensolver, a Kalman dynamic hedge ratio, rolling z-score signals and a dollar-neutral pairs backtest with next-close execution are each specified down to the solver in API_SPEC.md, so all four languages reproduce 24 golden cases to 1e-6..1e-10 and the same exact trade count. No RNG at runtime; the reference is cross-validated against statsmodels before any golden is written.</p>
+    <nav>
+      <a href="https://github.com/AshJha0/statistical-arbitrage/blob/main/LEARN.md">Learn (guide)</a>
+      <a class="secondary" href="https://github.com/AshJha0/statistical-arbitrage/blob/main/COOKBOOK.md">Cookbook</a>
+      <a class="secondary" href="https://github.com/AshJha0/statistical-arbitrage/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+      <a class="secondary" href="https://github.com/AshJha0/statistical-arbitrage/blob/main/API_SPEC.md">API contract</a>
+      <a class="secondary" href="https://github.com/AshJha0/statistical-arbitrage#references">References</a>
+      <a class="secondary" href="https://github.com/AshJha0/statistical-arbitrage">GitHub</a>
+      <a class="secondary" href="https://ashjha0.github.io/quant-portfolio/">Quant portfolio</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <h2>Measured, not claimed</h2>
+  <div class="numbers"><table>
+    <tr><td>Cross-language parity</td><td>python 86 · cpp 63 · rust 74 · java 65 tests — 288 green</td></tr>
+    <tr><td>Golden suite</td><td>24 named cases in <code>golden.json</code> — OLS, ADF t-stats with finite-sample 5 % critical values and p-values, Engle–Granger verdicts, Johansen trace statistics and rank, half-life, Kalman betas and z-scores at pinned days, backtest metrics; absolute tolerances 1e-6 to 1e-10, integers exact, exact case count asserted</td></tr>
+    <tr><td>Reference validation</td><td><code>generate_data.py</code> cross-checks the Python reference against statsmodels (OLS coefficients/SEs, ADF t-stats, <code>mackinnoncrit</code>, <code>coint_johansen</code> eigenvalues and trace) and an independent numpy generalised-eigenproblem solve, and refuses to write on any disagreement</td></tr>
+    <tr><td>Pinned event order</td><td>mark-to-market → execute pending → signal; next-close execution, exact dollar neutrality at entry, golden trade count of 31 on the bundled pair; a pending entry on the final day is discarded, never force-closed — property-tested over every truncation of the pair</td></tr>
+    <tr><td>Finite-sample statistics</td><td>MacKinnon (2010) response surface <code>b_inf + b1/T + b2/T² + b3/T³</code> evaluated at the regression sample size for N = 1, 2, 3; <code>T_eff ≥ 20</code> enforced, never extrapolated; the 5 % one-series value is −2.86 asymptotically but −2.92 at T = 50 and −3.02 at T = 20</td></tr>
+    <tr><td>Determinism</td><td>no RNG at runtime (seeds live only in the data generator); native LU, Cholesky and cyclic Jacobi eigensolvers; Neumaier/Kahan-compensated cross-product sums in the C++, Rust and Java ports</td></tr>
+    <tr><td>Teaching cases</td><td>regime break at day 1050: Kalman beta-tracking RMSE 0.0237 vs static OLS 0.2879 · walk-forward 60/40 split: in-sample Sharpe 1.49 → out-of-sample −1.37 across the break, stated honestly · independent random walks: slope t = 8.4 yet no cointegration, no backtest run</td></tr>
+    <tr><td>Validation</td><td>every public entry point rejects NaN/inf, length mismatches, empty/constant/collinear inputs and out-of-domain parameters with the language's error type; the CSV loader refuses non-finite cells and a non-monotone <code>day</code> column; no NaN reaches a metric</td></tr>
+  </table></div>
+
+  <div class="honest"><strong>What the latest review found and fixed.</strong> Two defects that a desk would hit in exactly the samples it uses. The backtester executed an entry signalled at day T−2 at the final close and force-closed it at that same close, reporting a phantom zero-day round trip that paid two costs and distorted trade count, win rate, holding period and Sharpe on every rolling daily re-run; the pinned rule now discards a pending entry at the end of data (a pending exit still executes), and the discard is golden-tested on hand-built spreads and property-tested over every truncation of the bundled pair. The ADF and Engle–Granger tests used asymptotic critical values, which on 60-day rolling screens systematically over-detect cointegration (the 2-variable 5 % value is −3.34 asymptotically but −3.46 at T_eff = 50); every port now evaluates the MacKinnon (2010) finite-sample response surface at the actual regression size and refuses <code>T_eff &lt; 20</code>. Finite-parameter checks, day-column monotonicity and config re-validation were added in the same pass; 3 golden cases were added (24 total) with the 21 existing values unchanged. Known limits: <code>P₀ = 1e3·I</code> is not diffuse for four-digit prices, stops fire on favourable overshoots too, and returns are on notional, not compounded.</div>
+
+  <h2>What's inside</h2>
+  <div class="grid">
+    <div class="card"><h3>OLS &amp; ADF</h3>
+      <p><code>ols.py</code>: normal equations with a pinned LU solve, plain standard errors, t-stats and R². <code>adf.py</code>: augmented Dickey–Fuller with a fixed lag (default 1), constant and no trend, MacKinnon (2010) finite-sample critical values at the regression sample size (<code>T_eff ≥ 20</code>, <code>maxlag ≤ 1000</code>) and an interpolated approximate p-value that is never used for a verdict.</p></div>
+    <div class="card"><h3>Engle–Granger &amp; Johansen-lite</h3>
+      <p><code>engle_granger.py</code> runs the hedge OLS then the residual ADF against the 2- or 3-variable EG table. <code>johansen.py</code> is the 2–3 asset VECM with an unrestricted constant and k = 1 lagged difference, solved with a native Cholesky factorisation and cyclic Jacobi eigensolver against the Osterwald–Lenum 95 % trace table — no small-sample correction, trace test only, and collinear inputs are rejected.</p></div>
+    <div class="card"><h3>Half-life &amp; Kalman hedge</h3>
+      <p>Half-life from an AR(1) fit on the spread, <code>hl = −ln 2 / ln(1 + ρ)</code>, with the sentinels <code>+inf</code> and <code>0.0</code> both meaning "do not trade" — pinned in every port. <code>kalman.py</code> tracks a random-walk state (αₜ, βₜ) with RiskMetrics-style <code>Q = δ/(1−δ)·I</code>, a Joseph-form covariance update and innovation z-scores; <code>r</code> must be finite and positive.</p></div>
+    <div class="card"><h3>Signals &amp; pairs backtest</h3>
+      <p><code>signals.py</code>: a current-observation-inclusive rolling z-score (ddof = 1, zero-variance guard). <code>backtest.py</code>: a FLAT/LONG/SHORT state machine with next-close execution, equal-dollar legs sized to <code>capital/2</code> at every entry, basis-point costs plus slippage, <code>|z| ≥ stop_z</code> stops with same-direction re-entry allowed the next day, full metrics (total and annualised return, Sharpe, max drawdown, trades, win rate, holding period, turnover, stops), and a walk-forward split that estimates the hedge in-sample and trades it out-of-sample.</p></div>
+    <div class="card"><h3>Bundled data</h3>
+      <p><code>pair_equity.csv</code>: 1500 days of a cointegrated pair with true beta 1.7 and a break to 1.1 at day 1050. <code>fx_triangle.csv</code>: EURUSD vs a GBPUSD × EURGBP basket, cointegrated in logs, recovering the (1, −1, −1) triangle vector. <code>random_walks.csv</code>: two independent walks for the spurious-regression case. <code>config.json</code> holds the signal and cost parameters shared by all four demos; <code>generate_data.py</code> regenerates everything from fixed seeds.</p></div>
+    <div class="card"><h3>Golden suite &amp; testing</h3>
+      <p>Every language loads the same <code>golden.json</code> and asserts each scalar within its tolerance, so a different lag convention, a non-Joseph update or a different z-score window fails immediately. Beyond goldens, each port carries the same behavioural suite: accounting identity, exact dollar neutrality at entry, next-close execution, the end-of-data discard rule on hand-built spreads with closed-form z-scores, the every-truncation "no zero-day trade" property, stop/re-entry timing, negative-equity metrics, walk-forward length checks and loader validation.</p></div>
+    <div class="card"><h3>Units, timing, scope</h3>
+      <p>Prices are raw levels in whatever unit you pass (the FX example uses logs because cross-rate identities are multiplicative); <code>alpha</code>, <code>beta</code>, the Kalman <code>r</code> and <code>P₀</code> share those units. One row is one equally spaced observation, 252 periods per year and the one-close execution lag are hard-coded. Out of scope: calendars and day-count, intraday data, financing and borrow, market impact, position compounding, rolling diagnostics helpers, automatic lag selection, Johansen deterministic-term variants and p-values.</p></div>
+    <div class="card"><h3>Error contract</h3>
+      <p><code>ValueError</code> / <code>std::invalid_argument</code> / <code>Err(StatarbError)</code> / <code>IllegalArgumentException</code> for lengths, finiteness, emptiness, constancy, collinearity, parameter domains and window bounds at every public entry point; config structs are re-validated at run time in C++ and Rust; Rust's <code>walk_forward</code> returns an error rather than panicking on bad lengths. Rust is the one port with a typed error enum.</p></div>
+    <div class="card"><h3>References</h3>
+      <p>Dickey &amp; Fuller (1979); Said &amp; Dickey (1984); MacKinnon (2010) for the embedded response-surface coefficients and MacKinnon (1994) for the p-value surface it approximates; Engle &amp; Granger (1987); Phillips &amp; Ouliaris (1990); Granger &amp; Newbold (1974); Johansen (1988, 1991) and Johansen &amp; Juselius (1990); Osterwald-Lenum (1992); Uhlenbeck &amp; Ornstein (1930); Kalman (1960); Bucy &amp; Joseph (1968); Chan (2013) for the half-life and Kalman parameterisation; Gatev, Goetzmann &amp; Rouwenhorst (2006); Vidyamurthy (2004); Sharpe (1994); Lo (2002); Khandani &amp; Lo (2007); Avellaneda &amp; Lee (2010); Numerical Recipes §11.1 and Golub &amp; Van Loan §8.5 for Jacobi; Neumaier (1974) and Kahan (1965).</p></div>
+    <div class="card"><h3>Guide &amp; cookbook</h3>
+      <p>LEARN.md covers stationarity and unit roots, spurious regression, cointegration, the ADF test and why finite-sample critical values matter, Engle–Granger and its limits, Johansen accessibly, the OU half-life, Kalman hedging, pairs trading in practice, risk management, numerical pitfalls (including end-of-data phantom trades) and interview Q&amp;A. COOKBOOK.md holds task-oriented recipes in all four languages.</p></div>
+  </div>
+
+  <h2>Part of a wider portfolio</h2>
+  <div class="grid">
+    <div class="card"><h3><a href="https://ashjha0.github.io/quant-portfolio/" style="color:inherit">quant-portfolio</a></h3>
+      <p>The end-to-end quantitative finance portfolio this project sits alongside: 10 project
+         areas built twice each (equity + FX) in Python with C++ and Rust performance twins —
+         31 sub-projects with golden-vector cross-language validation, a 481-question learning
+         guide and a verified cookbook. <a href="https://github.com/AshJha0/quant-portfolio">GitHub&nbsp;→</a></p></div>
+    <div class="card"><h3><a href="https://ashjha0.github.io/intraday-alpha-platform/" style="color:inherit">intraday-alpha-platform</a></h3>
+      <p>A polyglot (Python/C++/Rust/Java) research-to-production intraday trading platform:
+         market data → order books → 205-feature factory → 24 alphas → validation → portfolio →
+         fail-closed risk → execution → TCA, with an adaptive drift/lifecycle layer and 1,160
+         golden-parity tests. <a href="https://github.com/AshJha0/intraday-alpha-platform">GitHub&nbsp;→</a></p></div>
+    <div class="card"><h3><a href="https://github.com/AshJha0/Quant-Finance-Library" style="color:inherit">quantfinlib</a></h3>
+      <p>A zero-dependency quantitative finance platform for the JVM — research, validation,
+         execution and connectivity, from walk-forward backtesting to a measured
+         sub-microsecond tick-to-order path, with 1,090+ tests and CI on every push.
+         <a href="https://github.com/AshJha0/Quant-Finance-Library">GitHub&nbsp;→</a></p></div>
+  </div>
+
+  <h2>Quick start</h2>
+<pre>git clone https://github.com/AshJha0/statistical-arbitrage &amp;&amp; cd statistical-arbitrage
+
+# Python reference (3.11; numpy required, pytest + statsmodels only for the tests)
+cd python
+pip install -r requirements.txt         # numpy; pytest + statsmodels for tests
+PYTHONPATH=src python3 demo.py          # run the demo
+PYTHONPATH=src python3 -m pytest -q     # run the tests (86 pass)
+cd ..
+
+# C++ (g++ 13, CMake &gt;= 3.16, GoogleTest via find_package(GTest))
+cd cpp
+bash build.sh                           # = cmake -S . -B build -DCMAKE_BUILD_TYPE=Release &amp;&amp; cmake --build build -j2
+./build/statarb_demo                    # run the demo (from cpp/, reads ../data)
+ctest --test-dir build --output-on-failure   # run the tests (63 pass)
+cd ..
+
+# Rust (1.95, edition 2021; only dependency serde_json for the config loader)
+cd rust
+cargo run --bin demo --release          # run the demo
+cargo test --release                    # run the tests (74 pass)
+cd ..
+
+# Java (21; JUnit 4 + Hamcrest — no Maven/Gradle)
+cd java
+bash build.sh                           # javac -Xlint:all -Werror everything into out/
+bash demo.sh                            # run the demo main
+bash test.sh                            # JUnitCore on all *Test classes (65 pass)</pre>
+
+  <footer>statistical-arbitrage — four golden-pinned ports of cointegration testing, Kalman hedging and a pairs backtest whose limits are documented, not hidden. See the <a href="https://github.com/AshJha0/statistical-arbitrage/blob/main/README.md">README</a> and the <a href="https://github.com/AshJha0/statistical-arbitrage/blob/main/LICENSE">MIT license</a>.</footer>
+</div>
+</body>
+</html>

@@ -57,6 +57,10 @@ def cholesky_lower(a: np.ndarray) -> np.ndarray:
     """
     a = np.asarray(a, dtype=float)
     n = a.shape[0]
+    if a.ndim != 2 or a.shape != (n, n):
+        raise ValueError("cholesky_lower requires a square matrix")
+    if not np.all(np.isfinite(a)):
+        raise ValueError("inputs must be finite (no NaN/inf)")
     L = np.zeros((n, n))
     for j in range(n):
         d = a[j, j] - float(L[j, :j] @ L[j, :j])
@@ -83,7 +87,11 @@ def jacobi_eigh(a: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     A = np.array(a, dtype=float, copy=True)
     n = A.shape[0]
-    if A.shape != (n, n) or not np.allclose(A, A.T, atol=1e-10):
+    if A.ndim != 2 or A.shape != (n, n):
+        raise ValueError("jacobi_eigh requires a symmetric square matrix")
+    if not np.all(np.isfinite(A)):
+        raise ValueError("inputs must be finite (no NaN/inf)")
+    if not np.allclose(A, A.T, atol=1e-10):
         raise ValueError("jacobi_eigh requires a symmetric square matrix")
     V = np.eye(n)
     for _ in range(JACOBI_MAX_SWEEPS):

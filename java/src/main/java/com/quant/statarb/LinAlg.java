@@ -277,10 +277,19 @@ public final class LinAlg {
      * Lower-triangular Cholesky factor of a small SPD matrix (pinned
      * column-by-column algorithm).
      *
-     * @throws IllegalArgumentException when a pivot is not strictly positive
+     * @throws IllegalArgumentException when the matrix is not square, not
+     *     finite, or a pivot is not strictly positive
      */
     public static double[][] choleskyLower(double[][] a) {
         int n = a.length;
+        for (double[] row : a) {
+            if (row.length != n) {
+                throw new IllegalArgumentException("choleskyLower requires a square matrix");
+            }
+        }
+        if (!allFinite(a)) {
+            throw new IllegalArgumentException("inputs must be finite (no NaN/inf)");
+        }
         double[][] l = new double[n][n];
         for (int j = 0; j < n; j++) {
             double d = a[j][j];
@@ -318,7 +327,8 @@ public final class LinAlg {
      *
      * @param a symmetric square matrix (checked to {@code atol=1e-10})
      * @return eigenvalues sorted descending with matching eigenvector columns
-     * @throws IllegalArgumentException when the matrix is not symmetric
+     * @throws IllegalArgumentException when the matrix is not square, not
+     *     finite, or not symmetric
      */
     public static Eigen jacobiEigh(double[][] a) {
         int n = a.length;
@@ -328,6 +338,9 @@ public final class LinAlg {
                 throw new IllegalArgumentException("jacobiEigh requires a square matrix");
             }
             m[i] = a[i].clone();
+        }
+        if (!allFinite(a)) {
+            throw new IllegalArgumentException("inputs must be finite (no NaN/inf)");
         }
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {

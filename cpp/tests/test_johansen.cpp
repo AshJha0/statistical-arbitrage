@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "statarb/data_io.hpp"
@@ -91,6 +92,38 @@ TEST(Johansen, ValidationErrors) {
     statarb::Matrix nf = pair_levels(50);
     nf(10, 1) = std::numeric_limits<double>::quiet_NaN();
     EXPECT_THROW(statarb::johansen_trace(nf), std::invalid_argument);
+}
+
+TEST(Johansen, CollinearLevelsRejected) {
+    // Proposed test 11: exactly collinear level columns are refused with a
+    // "singular" error rather than producing garbage eigenvalues.
+    const auto pair = statarb::load_csv("../data/pair_equity.csv");
+    const std::vector<double>& y = pair.at("stock_y");
+    const std::vector<double>& x = pair.at("stock_x");
+    statarb::Matrix two(200, 2), three(200, 3);
+    for (std::size_t i = 0; i < 200; ++i) {
+        two(i, 0) = y[i];
+        two(i, 1) = 2.0 * y[i] + 1.0;
+        three(i, 0) = y[i];
+        three(i, 1) = x[i];
+        three(i, 2) = y[i] + x[i];
+    }
+    for (const statarb::Matrix* lv : {&two, &three}) {
+        try {
+            statarb::johansen_trace(*lv);
+            FAIL() << "collinear levels must throw";
+        } catch (const std::invalid_argument& e) {
+            EXPECT_NE(std::string(e.what()).find("singular"), std::string::npos) << e.what();
+        }
+    }
+}
+
+TEST(Linalg, HelpersRejectNonFinite) {
+    statarb::Matrix nan_m(2, 2, 1.0);
+    nan_m(0, 1) = nan_m(1, 0) = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_THROW(statarb::jacobi_eigh(nan_m), std::invalid_argument);
+    EXPECT_THROW(statarb::cholesky_lower(nan_m), std::invalid_argument);
+    EXPECT_THROW(statarb::cholesky_lower(statarb::Matrix(2, 3, 1.0)), std::invalid_argument);
 }
 
 TEST(Linalg, CholeskyFactorsSpdMatrix) {

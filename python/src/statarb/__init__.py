@@ -4,7 +4,15 @@ Self-contained reference implementation: numpy only.  See API_SPEC.md at
 the project root for the pinned numerical contract shared by all language
 implementations.
 """
-from .adf import CRITICAL_VALUES, ADFResult, adf_test, interpolate_pvalue
+from .adf import (
+    CRITICAL_VALUES,
+    MIN_NOBS,
+    RESPONSE_SURFACE,
+    ADFResult,
+    adf_test,
+    critical_values,
+    interpolate_pvalue,
+)
 from .backtest import (
     BacktestConfig,
     BacktestResult,
@@ -35,7 +43,9 @@ __all__ = [
     "EGResult",
     "JohansenResult",
     "KalmanResult",
+    "MIN_NOBS",
     "OLSResult",
+    "RESPONSE_SURFACE",
     "TRACE_CRIT_95",
     "Trade",
     "WalkForwardResult",
@@ -43,6 +53,7 @@ __all__ = [
     "backtest_pair",
     "cholesky_lower",
     "compute_metrics",
+    "critical_values",
     "engle_granger",
     "half_life",
     "interpolate_pvalue",
@@ -57,4 +68,4 @@ __all__ = [
     "walk_forward",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

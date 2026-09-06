@@ -93,4 +93,23 @@ TEST(Kalman, ValidationErrors) {
     EXPECT_THROW(statarb::kalman_hedge(bad, x, 1e-4, 1e-3), std::invalid_argument);
 }
 
+TEST(Kalman, RejectsNonFiniteParams) {
+    // Proposed test 4 (MAJ-3): r in {NaN, +inf}, delta NaN/inf -> error on
+    // the first 50 bundled rows; a valid call yields finite paths.
+    const std::vector<double> y(pair().y.begin(), pair().y.begin() + 50);
+    const std::vector<double> x(pair().x.begin(), pair().x.begin() + 50);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    for (double r : {nan, inf, -inf, 0.0, -1e-3}) {
+        EXPECT_THROW(statarb::kalman_hedge(y, x, 1e-4, r), std::invalid_argument);
+    }
+    for (double d : {nan, inf, -inf}) {
+        EXPECT_THROW(statarb::kalman_hedge(y, x, d, 1e-3), std::invalid_argument);
+    }
+    const statarb::KalmanResult km = statarb::kalman_hedge(y, x, 1e-4, 1e-3);
+    for (std::size_t t = 0; t < km.beta.size(); ++t) {
+        EXPECT_TRUE(std::isfinite(km.beta[t]) && std::isfinite(km.z[t]));
+    }
+}
+
 }  // namespace

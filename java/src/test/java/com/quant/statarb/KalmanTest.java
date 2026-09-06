@@ -117,4 +117,22 @@ public class KalmanTest {
                 () -> Kalman.hedge(new double[] {1.0, Double.NaN, 3.0},
                         new double[] {0.0, 1.0, 2.0}, 1e-4, 1e-3));
     }
+
+    @Test
+    public void rejectsNonFiniteParams() {
+        // proposed test 4 (MAJ-3): r in {NaN, +inf}, delta NaN/inf -> error on
+        // the first 50 bundled rows (previously r = NaN gave an all-NaN path)
+        double[] y = TestData.slice(TestData.pair().get("stock_y"), 0, 50);
+        double[] x = TestData.slice(TestData.pair().get("stock_x"), 0, 50);
+        for (double r : new double[] {Double.NaN, Double.POSITIVE_INFINITY,
+                Double.NEGATIVE_INFINITY, 0.0, -1e-3}) {
+            assertThrows(IllegalArgumentException.class, () -> Kalman.hedge(y, x, 1e-4, r));
+        }
+        for (double d : new double[] {Double.NaN, Double.POSITIVE_INFINITY,
+                Double.NEGATIVE_INFINITY}) {
+            assertThrows(IllegalArgumentException.class, () -> Kalman.hedge(y, x, d, 1e-3));
+        }
+        Kalman.Result km = Kalman.hedge(y, x, 1e-4, 1e-3);
+        assertTrue(LinAlg.allFinite(km.beta()) && LinAlg.allFinite(km.z()));
+    }
 }

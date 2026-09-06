@@ -7,6 +7,7 @@ sequenceDiagram
     BT->>EQ: 1. mark-to-market pnl_t (quantities from day t-1)
     BT->>SM: 2. execute pending order (decided at close t-1)
     SM-->>EQ: entry/exit costs on traded notional
+    Note over SM: a pending ENTRY is executed only if t < T-1<br/>(an entry signalled at T-2 is discarded, never opened-and-closed at one close)
     alt t == T-1 and position open
         BT->>SM: 2b. force-close at final close
         SM-->>EQ: exit cost, Trade appended

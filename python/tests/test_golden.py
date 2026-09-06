@@ -28,6 +28,10 @@ DATA = Path(__file__).resolve().parents[2] / "data"
 with (DATA / "golden" / "golden.json").open() as f:
     GOLDEN = json.load(f)["cases"]
 
+#: Exact number of golden cases (kept in step with generate_data.py and the
+#: C++/Rust/Java golden suites).
+GOLDEN_COUNT = 24
+
 
 def _compute(name: str, inputs: dict) -> float:
     cfg = load_config(DATA / "config.json")
@@ -41,10 +45,13 @@ def _compute(name: str, inputs: dict) -> float:
                 "ols_pair_beta": fit.params[1],
                 "ols_pair_r2": fit.r2}[name]
 
-    if name in ("adf_random_walk_tstat", "adf_random_walk_reject"):
+    if name.startswith("adf_random_walk"):
         walks = load_csv(DATA / "random_walks.csv")
         res = adf_test(walks[inputs["column"]], maxlag=cfg["adf_maxlag"], nvars=1)
-        return res.tstat if name.endswith("tstat") else float(res.reject(0.05))
+        return {"adf_random_walk_tstat": res.tstat,
+                "adf_random_walk_reject": float(res.reject(0.05)),
+                "adf_random_walk_crit5": res.crit["5%"],
+                "adf_random_walk_pvalue": res.pvalue}[name]
 
     if name == "eg_spurious_coint":
         walks = load_csv(DATA / "random_walks.csv")
@@ -56,6 +63,8 @@ def _compute(name: str, inputs: dict) -> float:
 
     if name == "adf_resid_insample_tstat":
         return eg.adf.tstat
+    if name == "adf_resid_insample_crit5":
+        return eg.adf.crit["5%"]
     if name == "eg_pair_insample_coint":
         return float(eg.cointegrated(0.05))
     if name == "halflife_insample_spread":
@@ -92,7 +101,7 @@ def test_golden_case(case: dict) -> None:
 def test_golden_schema_flat_scalars() -> None:
     """Golden file keeps the flat cross-language schema: scalar inputs and
     a single scalar expectation per case."""
-    assert len(GOLDEN) >= 18
+    assert len(GOLDEN) == GOLDEN_COUNT
     names = [c["name"] for c in GOLDEN]
     assert len(names) == len(set(names))
     for c in GOLDEN:

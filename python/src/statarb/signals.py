@@ -66,7 +66,12 @@ def half_life(s: np.ndarray) -> float:
     Half-life = -ln(2) / ln(1 + rho).
 
     Guards (pinned): rho >= 0 (no reversion) returns +inf; 1 + rho <= 0
-    (over-shooting flip) returns 0.0.
+    returns the sentinel 0.0.  Both sentinels mean "the AR(1) fit is not
+    interpretable as a half-life — do not trade this spread": +inf is a
+    random walk / explosive level, 0.0 is a sign-flipping fit (|1 + rho|
+    is either an oscillating stationary root for -2 < rho < -1 or an
+    explosive alternation for rho <= -2 — the sentinel deliberately does
+    NOT distinguish them).  A filter such as ``0 < hl < 30`` excludes both.
 
     Raises:
         ValueError: fewer than 12 observations, constant series, or

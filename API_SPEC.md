@@ -1,7 +1,7 @@
 # statarb — API Specification (pinned numerical contract)
 
-This document is the cross-language contract for project 09
-(statistical arbitrage: cointegration, Kalman filter, pairs backtest).
+This document is the cross-language contract for the `statistical-arbitrage`
+repository (cointegration, Kalman filter, pairs backtest).
 Every implementation (Python `statarb`, C++ `statarb::`, Rust crate
 `statarb`, Java `com.quant.statarb`) MUST reproduce the algorithms below
 exactly as pinned; agreement is enforced by `data/golden/golden.json`.
@@ -55,29 +55,59 @@ dy_t = c + rho * y_{t-1} + sum_{i=1..p} phi_i * dy_{t-i} + e_t
 - Cross-check target: statsmodels
   `adfuller(y, maxlag=p, regression='c', autolag=None)` t-stat, |diff| < 1e-8.
 
-Embedded critical-value tables (MacKinnon-style asymptotic values,
-constant no-trend case; pinned verbatim, keyed by `nvars`):
+Critical values (pinned): the **MacKinnon (2010) finite-sample response
+surfaces**, constant / no-trend case, evaluated at the effective
+regression sample size `T_eff` (exactly what statsmodels' `adfuller`
+passes to `mackinnoncrit`):
 
-| nvars | use                        |   1%  |   5%  |  10%  |
-|-------|----------------------------|-------|-------|-------|
-| 1     | plain ADF on one series    | -3.43 | -2.86 | -2.57 |
-| 2     | EG residual test, 2 vars   | -3.90 | -3.34 | -3.04 |
-| 3     | EG residual test, 3 vars   | -4.29 | -3.74 | -3.45 |
+```
+cv(T_eff) = b_inf + b_1 / T_eff + b_2 / T_eff^2 + b_3 / T_eff^3
+```
 
-Verdict `reject(alpha)`: `tstat < cv(alpha)`, direct table lookup,
-`alpha` restricted to {0.01, 0.05, 0.10} (anything else is an error).
+Coefficients embedded verbatim (Table 1 of MacKinnon 2010, "no trend"
+panel; every language embeds these exact numbers; evaluated in Horner
+form `b_inf + inv*(b_1 + inv*(b_2 + inv*b_3))`, `inv = 1/T_eff`):
 
-Approximate p-value (documented approximation; the exact MacKinnon
-response surface is deliberately NOT implemented): piecewise-linear
+| nvars | use                      | level | b_inf    | b_1      | b_2     | b_3     |
+|-------|--------------------------|-------|----------|----------|---------|---------|
+| 1     | plain ADF on one series  | 1%    | -3.43035 | -6.5393  | -16.786 | -79.433 |
+|       |                          | 5%    | -2.86154 | -2.8903  | -4.234  | -40.040 |
+|       |                          | 10%   | -2.56677 | -1.5384  | -2.809  | 0       |
+| 2     | EG residual test, 2 vars | 1%    | -3.89644 | -10.9519 | -33.527 | 0       |
+|       |                          | 5%    | -3.33613 | -6.1101  | -6.823  | 0       |
+|       |                          | 10%   | -3.04445 | -4.2412  | -2.720  | 0       |
+| 3     | EG residual test, 3 vars | 1%    | -4.29374 | -14.4354 | -33.195 | 47.433  |
+|       |                          | 5%    | -3.74066 | -8.5632  | -10.852 | 27.982  |
+|       |                          | 10%   | -3.45218 | -6.2143  | -3.718  | 0       |
+
+The `b_inf` column is the asymptotic table (exposed separately as
+`CRITICAL_VALUES` / `adf_critical_values(nvars)` /
+`critical_values(nvars, None)` / `Adf.criticalValues(nvars)`); the test
+result's `crit` field always carries the finite-sample values at its own
+`nobs`. Worked values: nvars = 1, `T_eff = 1498` -> 5% cv `-2.8634713`;
+nvars = 2, `T_eff = 898` -> 5% cv `-3.3429426`; nvars = 1, `T_eff = 20`
+-> 5% cv `-3.0216450`.
+
+Verdict `reject(alpha)`: `tstat < cv(alpha)`, direct comparison with the
+finite-sample value, `alpha` restricted to {0.01, 0.05, 0.10} (anything
+else is an error).
+
+Approximate p-value (documented approximation; the exact MacKinnon 1994
+p-value response surface is deliberately NOT implemented): piecewise-linear
 interpolation of significance level through the knots
-`(cv_1%, 0.01), (cv_5%, 0.05), (cv_10%, 0.10)`:
+`(cv_1%, 0.01), (cv_5%, 0.05), (cv_10%, 0.10)` evaluated at the same
+`T_eff` (asymptotic knots when no sample size is given):
 - `tstat <= cv_5%`: use the segment through (cv_1%, 0.01)-(cv_5%, 0.05);
 - otherwise the segment through (cv_5%, 0.05)-(cv_10%, 0.10);
 - linear extrapolation beyond the outer knots with the edge slopes;
-- clamp to `[1e-4, 0.9999]`.
+- clamp to `[1e-4, 0.9999]`; a NaN t-stat is an error, +/-inf (an
+  exact-fit regression) clamps to the bound on its side.
 
-Validation: `maxlag` integer `>= 0`; `nvars` in {1,2,3}; finite input;
-non-constant series; `T_eff >= k + 10` else "series too short".
+Validation: `maxlag` integer in `[0, 1000]` (documented upper bound —
+no integer overflow for any input); `nvars` in {1,2,3}; finite input;
+non-constant series; `T_eff >= max(k + 10, 20)` else "series too short"
+(20 is the smallest sample size in MacKinnon's simulations; below it the
+response surface is an extrapolation and the test is refused).
 
 ## 3. Half-life of mean reversion (`half_life`)
 
@@ -89,7 +119,12 @@ half_life = -ln(2) / ln(1 + rho)
 ```
 
 Guards (pinned): `rho >= 0` -> `+inf` (no mean reversion);
-`1 + rho <= 0` -> `0.0`. Validation: `T >= 12`, finite, non-constant.
+`1 + rho <= 0` -> `0.0`. Both sentinels mean "the AR(1) fit is not
+interpretable as a half-life — do not trade this spread": `0.0` covers
+the oscillating (`-2 < rho < -1`) and explosive (`rho <= -2`) sign-flipping
+fits alike and deliberately does not distinguish them, so a tradeability
+filter must be two-sided (`0 < hl < H`). Validation: `T >= 12`, finite,
+non-constant.
 
 ## 4. Engle-Granger two-step (`engle_granger`)
 
@@ -186,7 +221,9 @@ Outputs: `alpha[t]`, `beta[t]`, `z[t]`, `innovation[t]`, `s_var[t]`,
 final 2x2 posterior `final_cov`.
 
 Validation: equal lengths, `T >= 2`, finite inputs,
-`0 < delta < 1` STRICTLY (bounds excluded), `r > 0`.
+`0 < delta < 1` STRICTLY (bounds excluded), `r > 0` AND finite (NaN and
++inf are rejected in every port — written as negated comparisons so NaN
+cannot pass).
 
 ## 7. Rolling z-score (`rolling_zscore`)
 
@@ -217,7 +254,11 @@ day t-1 close. Per-day sequence, t = 0..T-1:
    any, at day-t close prices.
 3. If `t == T-1` and a position is still open: force-close it at the
    final close (a normal closed trade, `stopped = false`). A pending
-   ENTRY at the end of data is discarded.
+   ENTRY at the end of data is DISCARDED: step 2 executes an entry only
+   when `t < T-1`, so a signal fired at `T-2` never produces a zero-day
+   round trip that is opened and force-closed at the same close (which
+   would charge two costs and distort trade count, win rate, holding
+   period and Sharpe). A pending EXIT at `T-1` executes normally.
 4. `E_t = E_{t-1} + pnl_t - cost_t` with `E_{-1} = capital`.
 5. If `t < T-1`, evaluate the signal `z_t` (section 7 z-score of the
    spread) and set at most one pending order (rules below).
@@ -263,11 +304,16 @@ holding minus its entry and exit costs.
 Accounting identity (tested at 1e-10 relative to capital):
 `E_{T-1} - capital == sum_t pnl_t - sum_t cost_t`.
 
-### Configuration (validated on construction)
+### Configuration (validated on construction AND at run time)
 
-`window >= 2` (integer); `0 <= exit_z < entry_z < stop_z`;
-`cost_bps, slippage_bps >= 0`; `capital > 0` finite. Price inputs must
-be finite and strictly positive; equal lengths; `window <= T`.
+`window >= 2` (integer); `entry_z, exit_z, stop_z, cost_bps,
+slippage_bps` all finite (NaN/inf rejected); `0 <= exit_z < entry_z <
+stop_z`; `cost_bps, slippage_bps >= 0`; `capital > 0` finite. Ports whose
+config is a mutable struct (C++, Rust) re-run the same validation inside
+`backtest_pair` and `walk_forward`, so mutating a field after
+construction cannot bypass it (Python's dataclass is frozen, Java's
+record is immutable). Price inputs must be finite and strictly positive;
+equal lengths; `window <= T`.
 
 ### Metrics (pinned formulas; N = number of days)
 
@@ -275,10 +321,15 @@ be finite and strictly positive; equal lengths; `window <= T`.
 daily_ret_t      = (E_t - E_{t-1}) / capital        # return on gross capital
 total_return     = (E_{N-1} - capital) / capital
 ann_return       = (1 + total_return)^(252/N) - 1
+                   (pinned to exactly -1.0 when total_return <= -1, i.e.
+                   the equity curve ends at or below zero — the power is
+                   undefined there; NaN is never returned)
 sharpe           = mean(daily_ret) / std(daily_ret, ddof=1) * sqrt(252)
                    (0.0 when std == 0 or N < 2)
 max_drawdown     = max_t (peak_t - E_t) / peak_t,  peak_t = running max E
-                   (positive fraction; 0 when equity never dips)
+                   (positive fraction; 0 when equity never dips; may
+                   exceed 1 when equity goes negative — the loss exceeded
+                   the peak — but is always finite)
 n_trades         = closed round trips (force-close counts, discarded
                    pending entries do not)
 win_rate         = wins / n_trades   (win: net trade pnl > 0; 0 if none)
@@ -288,11 +339,20 @@ turnover         = total traded notional / capital
 
 No-trade guard: with no trades all of the above are exactly 0 and the
 equity curve is flat at `capital` (no NaN/inf anywhere).
+`compute_metrics` itself rejects an empty or non-finite equity curve and
+a non-positive / non-finite capital.
+
+Returns are on gross notional `capital`, not on running equity: legs are
+sized to `capital/2` at every entry regardless of P&L to date (no
+compounding, no leverage cap, no financing or borrow on the short leg).
 
 ### Walk-forward (`walk_forward`)
 
-`split = floor(T * insample_frac)` with `0 < insample_frac < 1`
-(default 0.6). Estimate `(alpha, beta)` by section-1 OLS on days
+`split = floor(T * insample_frac + 1e-9)` with `0 < insample_frac < 1`
+(default 0.6). The `1e-9` nudge (pinned) removes binary-float artefacts:
+`700 * 0.7 == 489.99999999999994` in IEEE double, and the intended split
+is 490 (likewise `100 * 0.29 -> 29`, `1500 * 0.6 -> 900`). `y` and `x`
+must have equal length (typed error otherwise, before any slicing). Estimate `(alpha, beta)` by section-1 OLS on days
 `0..split-1`; run the backtest on days `0..split-1` (in-sample) and,
 with the SAME parameters, on days `split..T-1` (out-of-sample). The OOS
 z-score warms up inside the OOS segment only — no information crosses
@@ -301,16 +361,25 @@ the split. Error when either segment is shorter than `window`.
 ## 9. Error behavior
 
 Python raises `ValueError` with a descriptive message; C++ throws
-`std::invalid_argument`; Rust returns `Result<_, StatarbError>`; Java
-throws `IllegalArgumentException`. Errors are raised for: series length
-mismatch, non-finite inputs, constant series in OLS/ADF/half-life,
-(near-)collinear designs (cond > 1e12), series too short, window larger
-than series or < 2, non-positive prices in the backtest, `delta`
-outside the open interval (0,1), `r <= 0`, `maxlag < 0`, `nvars`
-outside {1,2,3}, Johansen n outside {2,3} or `maxlag_diff != 1`,
-invalid backtest config ordering, `alpha` outside {0.01, 0.05, 0.10}
-in `reject`. Non-convergence (Jacobi sweep cap) is not an error: the
-best iterate is returned (matrices here are 2x2/3x3 and converge).
+`std::invalid_argument`; Rust returns `Result<_, StatarbError>` (never
+panics on any input); Java throws `IllegalArgumentException` (never an
+`ArrayIndexOutOfBoundsException`, including on empty arrays). Errors are
+raised for: series length mismatch (including in `walk_forward`),
+non-finite inputs (series, matrices, hedge parameters, equity curves),
+constant series in OLS/ADF/half-life, (near-)collinear designs
+(cond > 1e12, including collinear Johansen level columns), series too
+short (ADF `T_eff < max(k+10, 20)`), window larger than series or < 2,
+non-positive prices in the backtest, `delta` outside the open interval
+(0,1) or NaN, `r` not a finite number > 0, `maxlag < 0` or `> 1000`,
+`nvars` outside {1,2,3}, Johansen n outside {2,3} or `maxlag_diff != 1`,
+invalid or non-finite backtest config (also when re-validated at run
+time), `alpha` outside {0.01, 0.05, 0.10} in `reject`, NaN t-stat in the
+p-value interpolation, a CSV `day` column that is not strictly
+increasing, non-finite CSV cells or config values. Non-convergence
+(Jacobi sweep cap, 100 sweeps) is not an error: the best iterate is
+returned (matrices here are 2x2/3x3 and converge). Half-life sentinels
+(`+inf`, `0.0`) are returned values, not errors — both mean "not
+tradeable" (section 3).
 Deterministic everywhere; NO RNG at runtime (RNG lives only in
 `data/generate_data.py`).
 
@@ -330,7 +399,24 @@ Deterministic everywhere; NO RNG at runtime (RNG lives only in
   `capital` 1e6, `insample_frac` 0.6, `adf_maxlag` 1, `significance`
   0.05, `kalman_delta` 1e-4, `kalman_r` 1e-3.
 
-In-sample = the first `floor(1500 * 0.6) = 900` days.
+In-sample = the first `floor(1500 * 0.6 + 1e-9) = 900` days.
+
+Loader contract (`load_csv`, all languages): header plus at least one
+data row; no ragged rows; every cell a FINITE number (`nan`/`inf` cells
+are rejected, never propagated); unique column names; if a column named
+`day` exists it must be **strictly increasing** (unsorted, duplicated or
+re-merged time indices are refused at the boundary). Leading/trailing
+blank lines are ignored; an interior blank line is a ragged row.
+`load_config` accepts a flat JSON object whose values are finite numbers
+(JSON `NaN`/`Infinity`, booleans, strings and nested values are rejected).
+
+Time-grid assumption (documented, not validated beyond monotonicity):
+every model treats consecutive rows as EQUALLY SPACED observations —
+lag-1 differences in ADF/Johansen/half-life, next-close execution in the
+backtest, and the `sqrt(252)` / `252/N` annualisation assume one row per
+trading day. Gaps (holidays, missing prints) or non-daily bars are the
+caller's responsibility; there is no calendar, day-count or
+`periods_per_year` parameter.
 
 ## 11. Golden cases (`data/golden/golden.json`)
 
@@ -345,9 +431,12 @@ Engle-Granger on the first 900 days.
 |------|------------|-----|
 | ols_pair_alpha / _beta / _r2 | full-sample OLS y~x on the pair | 1e-10 |
 | adf_resid_insample_tstat | ADF t (maxlag 1) on in-sample EG residuals | 1e-8 |
+| adf_resid_insample_crit5 | MacKinnon (2010) 5% cv, nvars 2, T_eff 898 | 1e-10 |
 | eg_pair_insample_coint | EG verdict at 5% (1.0 = cointegrated) | 1e-9 |
 | adf_random_walk_tstat | ADF t on walk_a levels | 1e-8 |
 | adf_random_walk_reject | ADF verdict at 5% (0.0 = fails to reject) | 1e-9 |
+| adf_random_walk_crit5 | MacKinnon (2010) 5% cv, nvars 1, T_eff 1498 | 1e-10 |
+| adf_random_walk_pvalue | interpolated p-value through the T_eff-1498 knots | 1e-10 |
 | eg_spurious_coint | EG verdict walk_a~walk_b (0.0; no backtest is run) | 1e-9 |
 | johansen_pair_trace_r0 / _r1 | in-sample 2-asset trace stats | 1e-6 |
 | johansen_pair_rank | estimated rank (1) | 1e-9 |
@@ -357,6 +446,10 @@ Engle-Granger on the first 900 days.
 | backtest_total_return / _sharpe / _max_drawdown | full-sample backtest, in-sample hedge, config.json | 1e-8 |
 | backtest_n_trades | closed trades (31, exact integer) | 1e-9 |
 
-21 cases. Regenerate with `python3 data/generate_data.py`, which first
-cross-validates the reference OLS/ADF against statsmodels and refuses
-to write golden values on any disagreement.
+24 cases (every language's golden suite asserts this exact count).
+Regenerate with `python3 data/generate_data.py`, which first
+cross-validates the reference against statsmodels (OLS coefficients and
+standard errors; ADF t-statistics AND finite-sample critical values via
+`mackinnoncrit`; Johansen eigenvalues/trace statistics via
+`coint_johansen` and an independent numpy generalised-eigen solve) and
+refuses to write golden values on any disagreement.

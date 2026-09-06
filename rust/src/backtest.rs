@@ -31,11 +31,19 @@
 //!   execution close, both entry and exit (= capital per side here).
 //! * A position still open at the final day is force-closed at the final
 //!   close (counted as a closed trade, not a stop). A pending entry at
-//!   the end of data is discarded.
+//!   the end of data is DISCARDED (never executed-and-force-closed at the
+//!   same close).
+//! * Metrics: `ann_return = (1+total)^(252/N) - 1`, pinned to `-1.0` when
+//!   the equity curve ends at or below zero (`total_return <= -1`).
 
 use crate::error::{Result, StatarbError};
 use crate::ols::ols;
 use crate::signals::{rolling_zscore, spread};
+
+/// Nudge added before flooring `T * insample_frac` in [`walk_forward`] so
+/// the split is the intended integer despite binary-float products
+/// (`700.0 * 0.7 == 489.99999999999994`). Pinned.
+pub const SPLIT_EPS: f64 = 1.0e-9;
 
 /// Signal / cost parameters for the pairs backtest.
 ///
@@ -65,8 +73,9 @@ impl BacktestConfig {
     ///
     /// # Errors
     ///
-    /// [`StatarbError::InvalidParam`] on `window < 2`, threshold ordering
-    /// violation, negative costs, or non-positive/non-finite capital.
+    /// [`StatarbError::InvalidParam`] on `window < 2`, NaN/inf thresholds
+    /// or costs, threshold ordering violation, negative costs, or
+    /// non-positive/non-finite capital.
     pub fn new(
         window: usize,
         entry_z: f64,
@@ -94,6 +103,14 @@ impl BacktestConfig {
         if self.window < 2 {
             return Err(StatarbError::InvalidParam(
                 "window must be an integer >= 2".to_string(),
+            ));
+        }
+        if ![self.entry_z, self.exit_z, self.stop_z, self.cost_bps, self.slippage_bps]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            return Err(StatarbError::InvalidParam(
+                "thresholds and costs must be finite".to_string(),
             ));
         }
         if !(0.0 <= self.exit_z && self.exit_z < self.entry_z && self.entry_z < self.stop_z) {
@@ -210,11 +227,39 @@ enum State {
     Short,
 }
 
-/// Compute the pinned metric set from an equity curve and trade list.
-fn compute_metrics(equity: &[f64], capital: f64, trades: &[Trade]) -> Metrics {
+/// Compute the pinned metric set from an equity curve and trade list
+/// (`turnover` is filled in by [`backtest_pair`], not here).
+///
+/// # Errors
+///
+/// [`StatarbError::InvalidParam`] on an empty equity curve or a
+/// non-positive/non-finite capital; [`StatarbError::NonFinite`] on a
+/// non-finite equity value.
+pub fn compute_metrics(equity: &[f64], capital: f64, trades: &[Trade]) -> Result<Metrics> {
     let n = equity.len();
+    if n == 0 {
+        return Err(StatarbError::InvalidParam(
+            "equity curve must be a non-empty 1-D array".to_string(),
+        ));
+    }
+    if !equity.iter().all(|v| v.is_finite()) {
+        return Err(StatarbError::NonFinite(
+            "equity curve must be finite (no NaN/inf)".to_string(),
+        ));
+    }
+    if !(capital > 0.0 && capital.is_finite()) {
+        return Err(StatarbError::InvalidParam(
+            "capital must be positive and finite".to_string(),
+        ));
+    }
     let total_return = (equity[n - 1] - capital) / capital;
-    let ann_return = (1.0 + total_return).powf(252.0 / n as f64) - 1.0;
+    // (1 + total)^(252/N) is undefined for equity <= 0: pin the total loss
+    // of capital (and worse) to an annualised return of exactly -1.
+    let ann_return = if total_return <= -1.0 {
+        -1.0
+    } else {
+        (1.0 + total_return).powf(252.0 / n as f64) - 1.0
+    };
     let daily_ret: Vec<f64> = (0..n)
         .map(|t| {
             let prev = if t == 0 { capital } else { equity[t - 1] };
@@ -241,7 +286,7 @@ fn compute_metrics(equity: &[f64], capital: f64, trades: &[Trade]) -> Metrics {
     }
     let n_trades = trades.len();
     let wins = trades.iter().filter(|t| t.pnl > 0.0).count();
-    Metrics {
+    Ok(Metrics {
         total_return,
         ann_return,
         sharpe,
@@ -258,7 +303,7 @@ fn compute_metrics(equity: &[f64], capital: f64, trades: &[Trade]) -> Metrics {
             0.0
         },
         turnover: 0.0, // filled by the caller
-    }
+    })
 }
 
 /// Run the pinned pairs state machine over aligned price series.
@@ -328,10 +373,12 @@ pub fn backtest_pair(
         }
         let mut cost = 0.0;
 
-        // 2) execute the order decided at the day t-1 close
+        // 2) execute the order decided at the day t-1 close.  A pending
+        //    ENTRY on the final day is discarded (pinned): it could only be
+        //    force-closed at the same close, a phantom zero-day round trip.
         if let Some(order) = pending {
             match order {
-                Pending::Enter(direction) if state == State::Flat => {
+                Pending::Enter(direction) if state == State::Flat && t + 1 < t_len => {
                     qy = direction as f64 * (cap / 2.0) / y[t];
                     qx = -(direction as f64) * (cap / 2.0) / x[t];
                     let traded = qy.abs() * y[t] + qx.abs() * x[t];
@@ -410,7 +457,7 @@ pub fn backtest_pair(
         }
     }
 
-    let mut metrics = compute_metrics(&equity, cap, &trades);
+    let mut metrics = compute_metrics(&equity, cap, &trades)?;
     metrics.turnover = turnover_notional / cap;
     Ok(BacktestResult {
         equity,
@@ -444,10 +491,12 @@ pub struct WalkForwardResult {
 /// The out-of-sample z-score warms up inside the OOS segment only — no
 /// information crosses the split.
 ///
+/// `split = floor(T * insample_frac + SPLIT_EPS)` (pinned).
+///
 /// # Errors
 ///
-/// `insample_frac` outside (0, 1), or either segment shorter than the
-/// z-score window.
+/// `insample_frac` outside (0, 1), a length mismatch between `y` and `x`,
+/// an invalid config, or either segment shorter than the z-score window.
 pub fn walk_forward(
     y: &[f64],
     x: &[f64],
@@ -459,7 +508,13 @@ pub fn walk_forward(
             "insample_frac must lie strictly inside (0, 1)".to_string(),
         ));
     }
-    let split = (y.len() as f64 * insample_frac) as usize;
+    if y.len() != x.len() {
+        return Err(StatarbError::LengthMismatch(
+            "y and x must be 1-D arrays of equal length".to_string(),
+        ));
+    }
+    config.validate()?;
+    let split = (y.len() as f64 * insample_frac + SPLIT_EPS).floor() as usize;
     if split < config.window || y.len() - split < config.window {
         return Err(StatarbError::TooShort(
             "each walk-forward segment must cover the z window".to_string(),

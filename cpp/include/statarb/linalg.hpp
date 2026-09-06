@@ -4,11 +4,15 @@
 /// Everything here is deliberately small and self-contained: the design
 /// matrices in this project are tiny (k <= 4), so a hand-rolled LU solve,
 /// column Cholesky and cyclic Jacobi eigensolver (both PINNED by
-/// API_SPEC.md) are all that is needed.  Dot products accumulate in
-/// `long double` so cross-language golden agreement at 1e-10 survives
-/// 1500-row sums.
+/// API_SPEC.md) are all that is needed.  Long reductions (cross products
+/// over 1500 rows, residual sums of squares) use Neumaier compensated
+/// summation in plain `double` — the same algorithm as the Rust port —
+/// so the golden tolerances (1e-10 on OLS coefficients) are met on every
+/// platform, independent of the width of `long double` (80-bit on x86
+/// gcc/clang, 64-bit on MSVC, 128-bit software on AArch64).
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -41,16 +45,37 @@ private:
     std::vector<double> data_;
 };
 
+/// Neumaier compensated accumulator: numerically as good as an exact sum
+/// rounded once, for the long reductions in this library.
+struct NeumaierSum {
+    double sum = 0.0;
+    double comp = 0.0;
+
+    void add(double v) {
+        const double t = sum + v;
+        if (std::fabs(sum) >= std::fabs(v)) {
+            comp += (sum - t) + v;
+        } else {
+            comp += (v - t) + sum;
+        }
+        sum = t;
+    }
+    double value() const { return sum + comp; }
+};
+
+/// Compensated sum of a vector.
+double compensated_sum(const std::vector<double>& v);
+
 /// True when every element of `v` is finite (no NaN/inf).
 bool all_finite(const std::vector<double>& v);
 
 /// True when every element of `m` is finite (no NaN/inf).
 bool all_finite(const Matrix& m);
 
-/// Dot product with long-double accumulation.
+/// Dot product with compensated accumulation.
 double dot(const std::vector<double>& a, const std::vector<double>& b);
 
-/// Matrix product a * b (long-double accumulation per entry).
+/// Matrix product a * b (compensated accumulation per entry).
 Matrix matmul(const Matrix& a, const Matrix& b);
 
 /// Transpose of `a`.
@@ -72,7 +97,8 @@ Matrix inverse(const Matrix& a);
 
 /// Lower-triangular Cholesky factor of a symmetric positive-definite
 /// matrix (standard column algorithm, PINNED for Johansen).  Throws
-/// std::invalid_argument when a pivot is <= 0 (not positive definite).
+/// std::invalid_argument when the matrix is not square, not finite, or
+/// a pivot is <= 0 (not positive definite).
 Matrix cholesky_lower(const Matrix& a);
 
 /// Eigen-decomposition result of a symmetric matrix.
@@ -90,7 +116,7 @@ struct EigenResult {
 /// 100 sweeps.  Non-convergence is NOT an error: the best iterate is
 /// returned (matrices here are 2x2/3x3 and converge).
 ///
-/// Throws std::invalid_argument unless `a` is square and symmetric.
+/// Throws std::invalid_argument unless `a` is square, finite and symmetric.
 EigenResult jacobi_eigh(const Matrix& a);
 
 /// 2-norm condition number of a symmetric matrix: ratio of largest to

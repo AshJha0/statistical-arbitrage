@@ -29,12 +29,12 @@ pending order):
   execution close, both entry and exit (= capital per side here).
 * A position still open at the final day is force-closed at the final
   close (counted as a closed trade, not a stop).  A pending entry at the
-  end of data is discarded.
+  end of data is DISCARDED (never executed-and-force-closed the same day).
 
 Metrics (pinned formulas, N = number of days):
   daily_ret_t   = (E_t - E_{t-1}) / capital          (return on gross capital)
   total_return  = (E_{N-1} - capital) / capital
-  ann_return    = (1 + total_return)^(252/N) - 1
+  ann_return    = (1 + total_return)^(252/N) - 1     (-1.0 when total_return <= -1)
   sharpe        = mean(daily_ret) / std(daily_ret, ddof=1) * sqrt(252)
                   (0.0 when std == 0 or N < 2)
   max_drawdown  = max_t (peak_t - E_t) / peak_t, peak_t = running max E
@@ -54,6 +54,10 @@ from .ols import ols
 from .signals import rolling_zscore, spread
 
 _FLAT, _LONG, _SHORT = 0, 1, -1
+
+#: Nudge added before flooring ``T * insample_frac`` in walk_forward so the
+#: split is the intended integer despite binary-float products.  Pinned.
+SPLIT_EPS: float = 1.0e-9
 
 
 @dataclass(frozen=True)
@@ -79,13 +83,21 @@ class BacktestConfig:
     capital: float = 1_000_000.0
 
     def __post_init__(self) -> None:
-        if not isinstance(self.window, (int, np.integer)) or self.window < 2:
+        if isinstance(self.window, bool) or not isinstance(
+            self.window, (int, np.integer)
+        ) or self.window < 2:
             raise ValueError("window must be an integer >= 2")
+        for name in ("entry_z", "exit_z", "stop_z", "cost_bps", "slippage_bps"):
+            v = getattr(self, name)
+            if not (isinstance(v, (int, float, np.floating, np.integer))
+                    and math.isfinite(v)):
+                raise ValueError("thresholds and costs must be finite")
         if not (0.0 <= self.exit_z < self.entry_z < self.stop_z):
             raise ValueError("require 0 <= exit_z < entry_z < stop_z")
         if self.cost_bps < 0.0 or self.slippage_bps < 0.0:
             raise ValueError("costs must be >= 0")
-        if not (self.capital > 0.0 and math.isfinite(self.capital)):
+        if not (isinstance(self.capital, (int, float, np.floating, np.integer))
+                and self.capital > 0.0 and math.isfinite(self.capital)):
             raise ValueError("capital must be positive and finite")
 
 
@@ -123,10 +135,28 @@ class BacktestResult:
 def compute_metrics(
     equity: np.ndarray, capital: float, trades: list[Trade]
 ) -> dict[str, float]:
-    """Compute the pinned metric set from an equity curve and trade list."""
+    """Compute the pinned metric set from an equity curve and trade list.
+
+    Raises:
+        ValueError: empty equity curve, non-finite equity, or non-positive /
+            non-finite capital.
+    """
+    equity = np.asarray(equity, dtype=float)
     n = equity.shape[0]
+    if equity.ndim != 1 or n == 0:
+        raise ValueError("equity curve must be a non-empty 1-D array")
+    if not np.all(np.isfinite(equity)):
+        raise ValueError("equity curve must be finite (no NaN/inf)")
+    if not (isinstance(capital, (int, float, np.floating, np.integer))
+            and capital > 0.0 and math.isfinite(capital)):
+        raise ValueError("capital must be positive and finite")
     total_return = (float(equity[-1]) - capital) / capital
-    ann_return = (1.0 + total_return) ** (252.0 / n) - 1.0
+    # (1 + total)^(252/N) is undefined for equity <= 0: pin the total loss
+    # of capital (and worse) to an annualised return of exactly -1.
+    if total_return <= -1.0:
+        ann_return = -1.0
+    else:
+        ann_return = (1.0 + total_return) ** (252.0 / n) - 1.0
     prev = np.concatenate([[capital], equity[:-1]])
     daily_ret = (equity - prev) / capital
     if n >= 2:
@@ -206,10 +236,12 @@ def backtest_pair(
             open_pnl += pnl
         cost = 0.0
 
-        # 2) execute the order decided at the day t-1 close
+        # 2) execute the order decided at the day t-1 close.  A pending
+        #    ENTRY on the final day is discarded (pinned): it could only be
+        #    force-closed at the same close, a phantom zero-day round trip.
         if pending is not None:
             action, direction, stop_flag = pending
-            if action == "enter" and state == _FLAT:
+            if action == "enter" and state == _FLAT and t < T - 1:
                 qy = direction * (cap / 2.0) / y[t]
                 qx = -direction * (cap / 2.0) / x[t]
                 traded = abs(qy) * y[t] + abs(qx) * x[t]
@@ -297,15 +329,21 @@ def walk_forward(
     The out-of-sample z-score warms up inside the OOS segment only
     (no information leaks across the split).
 
+    ``split = floor(T * insample_frac + 1e-9)`` (pinned): the tiny nudge
+    removes binary-float artefacts such as ``700 * 0.7 == 489.99999999999994``
+    so the split is the mathematically intended integer.
+
     Raises:
-        ValueError: insample_frac outside (0, 1) or either segment shorter
-            than the z-score window.
+        ValueError: insample_frac outside (0, 1), length mismatch, or either
+            segment shorter than the z-score window.
     """
     if not (0.0 < insample_frac < 1.0):
         raise ValueError("insample_frac must lie strictly inside (0, 1)")
     y = np.asarray(y, dtype=float)
     x = np.asarray(x, dtype=float)
-    split = int(y.shape[0] * insample_frac)
+    if y.shape != x.shape or y.ndim != 1:
+        raise ValueError("y and x must be 1-D arrays of equal length")
+    split = int(math.floor(y.shape[0] * insample_frac + SPLIT_EPS))
     if split < config.window or y.shape[0] - split < config.window:
         raise ValueError("each walk-forward segment must cover the z window")
     fit = ols(y[:split], x[:split], intercept=True)

@@ -59,7 +59,8 @@ pub struct KalmanResult {
 /// # Errors
 ///
 /// Length mismatch, fewer than 2 observations, non-finite input,
-/// `delta` outside (0, 1), or `r <= 0`.
+/// `delta` outside the open interval (0, 1), or `r` not a finite number
+/// `> 0` (NaN and +inf are rejected).
 pub fn kalman_hedge(y: &[f64], x: &[f64], delta: f64, r: f64) -> Result<KalmanResult> {
     if y.len() != x.len() {
         return Err(StatarbError::LengthMismatch(format!(
@@ -83,9 +84,10 @@ pub fn kalman_hedge(y: &[f64], x: &[f64], delta: f64, r: f64) -> Result<KalmanRe
             "delta must lie strictly inside (0, 1)".to_string(),
         ));
     }
-    if r <= 0.0 {
+    // Negated comparison so NaN fails; +inf is rejected explicitly.
+    if !(r > 0.0 && r.is_finite()) {
         return Err(StatarbError::InvalidParam(
-            "observation variance r must be > 0".to_string(),
+            "observation variance r must be > 0 and finite".to_string(),
         ));
     }
 

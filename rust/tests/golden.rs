@@ -29,6 +29,9 @@ struct Expect {
     value: f64,
 }
 
+/// Exact number of golden cases (kept in step with generate_data.py).
+const GOLDEN_COUNT: usize = 24;
+
 fn data_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../data")
 }
@@ -47,7 +50,7 @@ fn compute(name: &str, inputs: &HashMap<String, serde_json::Value>) -> f64 {
     let pair = load_csv(&data.join("pair_equity.csv")).unwrap();
     let y = &pair["stock_y"];
     let x = &pair["stock_x"];
-    let n_is = (y.len() as f64 * cfg["insample_frac"]) as usize;
+    let n_is = (y.len() as f64 * cfg["insample_frac"] + statarb::SPLIT_EPS).floor() as usize;
     let maxlag = cfg["adf_maxlag"] as usize;
 
     if let Some(rest) = name.strip_prefix("ols_pair_") {
@@ -59,14 +62,16 @@ fn compute(name: &str, inputs: &HashMap<String, serde_json::Value>) -> f64 {
             other => panic!("unknown ols golden case: {other}"),
         };
     }
-    if name == "adf_random_walk_tstat" || name == "adf_random_walk_reject" {
+    if let Some(rest) = name.strip_prefix("adf_random_walk_") {
         let walks = load_csv(&data.join("random_walks.csv")).unwrap();
         let column = inputs["column"].as_str().unwrap();
         let res = adf_test(&walks[column], maxlag, 1).unwrap();
-        return if name.ends_with("tstat") {
-            res.tstat
-        } else {
-            res.reject(0.05).unwrap() as i32 as f64
+        return match rest {
+            "tstat" => res.tstat,
+            "reject" => res.reject(0.05).unwrap() as i32 as f64,
+            "crit5" => res.crit[1],
+            "pvalue" => res.pvalue,
+            other => panic!("unknown adf golden case: {other}"),
         };
     }
     if name == "eg_spurious_coint" {
@@ -78,6 +83,7 @@ fn compute(name: &str, inputs: &HashMap<String, serde_json::Value>) -> f64 {
     let eg = engle_granger(&y[..n_is], &x[..n_is], maxlag).unwrap();
     match name {
         "adf_resid_insample_tstat" => eg.adf.tstat,
+        "adf_resid_insample_crit5" => eg.adf.crit[1],
         "eg_pair_insample_coint" => eg.cointegrated(0.05).unwrap() as i32 as f64,
         "halflife_insample_spread" => half_life(&eg.resid).unwrap(),
         "johansen_pair_trace_r0" | "johansen_pair_trace_r1" | "johansen_pair_rank" => {
@@ -127,7 +133,7 @@ fn compute(name: &str, inputs: &HashMap<String, serde_json::Value>) -> f64 {
 #[test]
 fn golden_cases_all_match() {
     let cases = load_golden();
-    assert!(cases.len() >= 18, "expected at least 18 golden cases");
+    assert_eq!(cases.len(), GOLDEN_COUNT, "golden case count must be exact");
     let mut failures = Vec::new();
     for case in &cases {
         let got = compute(&case.name, &case.inputs);

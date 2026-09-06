@@ -10,6 +10,7 @@ Run:  cd python && PYTHONPATH=src python3 demo.py
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from statarb import (
     ols,
     walk_forward,
 )
+from statarb.backtest import SPLIT_EPS
 
 DATA = Path(__file__).resolve().parents[1] / "data"
 
@@ -55,7 +57,7 @@ def main() -> int:
     fx = load_csv(DATA / "fx_triangle.csv")
     walks = load_csv(DATA / "random_walks.csv")
     y, x = pair["stock_y"], pair["stock_x"]
-    n_is = int(len(y) * cfg["insample_frac"])
+    n_is = int(math.floor(len(y) * cfg["insample_frac"] + SPLIT_EPS))
     bt_cfg = BacktestConfig(
         window=cfg["window"], entry_z=cfg["entry_z"], exit_z=cfg["exit_z"],
         stop_z=cfg["stop_z"], cost_bps=cfg["cost_bps"],

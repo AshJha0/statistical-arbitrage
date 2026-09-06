@@ -75,3 +75,17 @@ def test_error_paths() -> None:
         kalman_hedge(np.array([1.0]), np.array([2.0]))
     with pytest.raises(ValueError, match="finite"):
         kalman_hedge(np.array([1.0, np.nan, 3.0]), np.arange(3.0))
+
+
+def test_kalman_rejects_nonfinite_params(pair: dict) -> None:
+    """Proposed test 4 (MAJ-3): r in {NaN, +inf}, delta NaN -> ValueError
+    (previously r = NaN produced an all-NaN beta path silently)."""
+    y, x = pair["stock_y"][:50], pair["stock_x"][:50]
+    for bad_r in (np.nan, np.inf, -np.inf, 0.0, -1e-3):
+        with pytest.raises(ValueError, match="r must be"):
+            kalman_hedge(y, x, delta=1e-4, r=bad_r)
+    for bad_delta in (np.nan, np.inf, -np.inf):
+        with pytest.raises(ValueError, match="delta"):
+            kalman_hedge(y, x, delta=bad_delta, r=1e-3)
+    km = kalman_hedge(y, x, delta=1e-4, r=1e-3)
+    assert np.all(np.isfinite(km.beta)) and np.all(np.isfinite(km.z))

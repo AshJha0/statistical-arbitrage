@@ -23,8 +23,9 @@ KalmanResult kalman_hedge(const std::vector<double>& y,
     if (!(delta > 0.0 && delta < 1.0)) {
         throw std::invalid_argument("delta must lie strictly inside (0, 1)");
     }
-    if (!(r > 0.0)) {
-        throw std::invalid_argument("observation variance r must be > 0");
+    // Negated comparisons so NaN fails; +inf is rejected explicitly.
+    if (!(r > 0.0) || !std::isfinite(r)) {
+        throw std::invalid_argument("observation variance r must be > 0 and finite");
     }
 
     const std::size_t t_len = y.size();

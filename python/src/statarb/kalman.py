@@ -25,6 +25,7 @@ signal to the rolling z-score.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -72,7 +73,8 @@ def kalman_hedge(
 
     Raises:
         ValueError: length mismatch, fewer than 2 observations,
-            non-finite input, delta outside (0, 1), or r <= 0.
+            non-finite input, delta outside the open interval (0, 1), or
+            r not a finite number > 0 (NaN and +inf are rejected).
     """
     y = np.asarray(y, dtype=float)
     x = np.asarray(x, dtype=float)
@@ -86,10 +88,11 @@ def kalman_hedge(
         raise ValueError("need at least 2 observations")
     if not (np.all(np.isfinite(y)) and np.all(np.isfinite(x))):
         raise ValueError("inputs must be finite (no NaN/inf)")
+    # Written as negated comparisons so NaN fails (NaN compares False).
     if not (0.0 < delta < 1.0):
         raise ValueError("delta must lie strictly inside (0, 1)")
-    if r <= 0.0:
-        raise ValueError("observation variance r must be > 0")
+    if not (r > 0.0 and math.isfinite(r)):
+        raise ValueError("observation variance r must be > 0 and finite")
 
     T = y.shape[0]
     q = delta / (1.0 - delta)

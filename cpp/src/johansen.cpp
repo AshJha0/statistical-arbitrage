@@ -137,12 +137,9 @@ JohansenResult johansen_trace(const Matrix& levels, int maxlag_diff) {
     res.trace_stats.resize(n);
     res.crit_95.resize(n);
     for (std::size_t r = 0; r < n; ++r) {
-        long double acc = 0.0L;
-        for (std::size_t i = r; i < n; ++i) {
-            acc += std::log(1.0 - res.eigenvalues[i]);
-        }
-        res.trace_stats[r] =
-            -static_cast<double>(t_eff) * static_cast<double>(acc);
+        double acc = 0.0;
+        for (std::size_t i = r; i < n; ++i) acc += std::log(1.0 - res.eigenvalues[i]);
+        res.trace_stats[r] = -static_cast<double>(t_eff) * acc;
         res.crit_95[r] = trace_crit_95(static_cast<int>(n - r));
     }
     res.rank = static_cast<int>(n);

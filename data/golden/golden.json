@@ -42,6 +42,17 @@
       "tol": 1e-08
     },
     {
+      "name": "adf_resid_insample_crit5",
+      "inputs": {
+        "data": "pair_equity.csv",
+        "insample_days": 900
+      },
+      "expect": {
+        "value": -3.342942581286799
+      },
+      "tol": 1e-10
+    },
+    {
       "name": "eg_pair_insample_coint",
       "inputs": {
         "data": "pair_equity.csv",
@@ -73,6 +84,28 @@
         "value": 0.0
       },
       "tol": 1e-09
+    },
+    {
+      "name": "adf_random_walk_crit5",
+      "inputs": {
+        "data": "random_walks.csv",
+        "column": "walk_a"
+      },
+      "expect": {
+        "value": -2.863471337969528
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "adf_random_walk_pvalue",
+      "inputs": {
+        "data": "random_walks.csv",
+        "column": "walk_a"
+      },
+      "expect": {
+        "value": 0.3491401443141102
+      },
+      "tol": 1e-10
     },
     {
       "name": "eg_spurious_coint",

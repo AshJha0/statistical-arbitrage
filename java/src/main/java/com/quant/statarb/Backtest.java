@@ -40,12 +40,22 @@ import java.util.Map;
  *       execution close, both entry and exit.</li>
  *   <li>A position still open at the final day is force-closed at the final
  *       close (a normal closed trade, not a stop). A pending entry at the end
- *       of data is discarded.</li>
+ *       of data is DISCARDED (never executed-and-force-closed at the same
+ *       close).</li>
+ *   <li>Metrics: {@code ann_return = (1+total)^(252/N) - 1}, pinned to -1.0
+ *       when the equity curve ends at or below zero (total_return &le; -1).</li>
  * </ul>
  */
 public final class Backtest {
 
     private static final int FLAT = 0;
+
+    /**
+     * Nudge added before flooring {@code T * insampleFrac} in
+     * {@link #walkForward} so the split is the intended integer despite
+     * binary-float products ({@code 700 * 0.7 == 489.99999999999994}). Pinned.
+     */
+    public static final double SPLIT_EPS = 1.0e-9;
 
     private Backtest() {
     }
@@ -65,10 +75,20 @@ public final class Backtest {
     public record Config(int window, double entryZ, double exitZ, double stopZ,
                          double costBps, double slippageBps, double capital) {
 
-        /** Validates the pinned parameter constraints. */
+        /**
+         * Validates the pinned parameter constraints.
+         *
+         * @throws IllegalArgumentException when window &lt; 2, any threshold or
+         *     cost is NaN/infinite, the ordering is violated, costs are negative,
+         *     or capital is not positive and finite
+         */
         public Config {
             if (window < 2) {
                 throw new IllegalArgumentException("window must be an integer >= 2");
+            }
+            if (!(Double.isFinite(entryZ) && Double.isFinite(exitZ) && Double.isFinite(stopZ)
+                    && Double.isFinite(costBps) && Double.isFinite(slippageBps))) {
+                throw new IllegalArgumentException("thresholds and costs must be finite");
             }
             if (!(0.0 <= exitZ && exitZ < entryZ && entryZ < stopZ)) {
                 throw new IllegalArgumentException("require 0 <= exit_z < entry_z < stop_z");
@@ -151,12 +171,28 @@ public final class Backtest {
      * {@code max_drawdown = max_t (peak_t - E_t)/peak_t} with peak the running
      * max of E (positive fraction); win_rate = wins/n_trades (0 if none);
      * avg_holding_days = mean(exitDay - entryDay) (0 if none).
+     * {@code ann_return} is pinned to -1.0 when {@code total_return <= -1}
+     * (the power is undefined for a non-positive base).
+     *
+     * @throws IllegalArgumentException on an empty or non-finite equity curve
+     *     or a non-positive / non-finite capital
      */
     public static Map<String, Double> computeMetrics(double[] equity, double capital,
                                                      List<Trade> trades) {
         int n = equity.length;
+        if (n == 0) {
+            throw new IllegalArgumentException("equity curve must be a non-empty 1-D array");
+        }
+        if (!LinAlg.allFinite(equity)) {
+            throw new IllegalArgumentException("equity curve must be finite (no NaN/inf)");
+        }
+        if (!(capital > 0.0 && Double.isFinite(capital))) {
+            throw new IllegalArgumentException("capital must be positive and finite");
+        }
         double totalReturn = (equity[n - 1] - capital) / capital;
-        double annReturn = Math.pow(1.0 + totalReturn, 252.0 / n) - 1.0;
+        double annReturn = totalReturn <= -1.0
+                ? -1.0
+                : Math.pow(1.0 + totalReturn, 252.0 / n) - 1.0;
         double[] dailyRet = new double[n];
         double prev = capital;
         for (int t = 0; t < n; t++) {
@@ -256,9 +292,11 @@ public final class Backtest {
             }
             double cost = 0.0;
 
-            // 2) execute the order decided at the day t-1 close
+            // 2) execute the order decided at the day t-1 close.  A pending
+            //    ENTRY on the final day is discarded (pinned): it could only be
+            //    force-closed at the same close, a phantom zero-day round trip.
             if (pending != 0) {
-                if ((pending == 1 || pending == -1) && state == FLAT) {
+                if ((pending == 1 || pending == -1) && state == FLAT && t < n - 1) {
                     int dir = pending;
                     qy = dir * (cap / 2.0) / y[t];
                     qx = -dir * (cap / 2.0) / x[t];
@@ -330,19 +368,23 @@ public final class Backtest {
      * backtest that segment in-sample, then trade the remainder out-of-sample
      * with the SAME (alpha, beta) — degradation on display.
      *
-     * <p>{@code split = floor(T * insampleFrac)}. The out-of-sample z-score
-     * warms up inside the OOS segment only (no information leaks across the
-     * split).
+     * <p>{@code split = floor(T * insampleFrac + SPLIT_EPS)} (pinned). The
+     * out-of-sample z-score warms up inside the OOS segment only (no
+     * information leaks across the split).
      *
-     * @throws IllegalArgumentException when insampleFrac is outside (0, 1) or
-     *     either segment is shorter than the z-score window
+     * @throws IllegalArgumentException when insampleFrac is outside (0, 1), the
+     *     series differ in length, or either segment is shorter than the
+     *     z-score window
      */
     public static WalkForwardResult walkForward(double[] y, double[] x, Config config,
                                                 double insampleFrac) {
         if (!(insampleFrac > 0.0 && insampleFrac < 1.0)) {
             throw new IllegalArgumentException("insample_frac must lie strictly inside (0, 1)");
         }
-        int split = (int) (y.length * insampleFrac);
+        if (y.length != x.length) {
+            throw new IllegalArgumentException("y and x must be 1-D arrays of equal length");
+        }
+        int split = (int) Math.floor(y.length * insampleFrac + SPLIT_EPS);
         if (split < config.window() || y.length - split < config.window()) {
             throw new IllegalArgumentException("each walk-forward segment must cover the z window");
         }

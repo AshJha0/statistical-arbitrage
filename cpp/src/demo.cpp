@@ -52,8 +52,8 @@ int main(int argc, char** argv) {
     const std::vector<double>& y = pair.at("stock_y");
     const std::vector<double>& x = pair.at("stock_x");
     const std::size_t n_days = y.size();
-    const int n_is = static_cast<int>(static_cast<double>(n_days) *
-                                      cfg.at("insample_frac"));
+    const int n_is = static_cast<int>(std::floor(
+        static_cast<double>(n_days) * cfg.at("insample_frac") + statarb::kSplitEps));
     const int maxlag = static_cast<int>(cfg.at("adf_maxlag"));
     const statarb::BacktestConfig bt_cfg(
         static_cast<int>(cfg.at("window")), cfg.at("entry_z"), cfg.at("exit_z"),
@@ -122,11 +122,11 @@ int main(int argc, char** argv) {
         std::printf("  %5zu   %8.3f   %10.4f   %12.4f\n", d, true_beta[d],
                     km.beta[d], b_ols);
     }
-    long double se_k = 0.0L, se_o = 0.0L;
+    double se_k = 0.0, se_o = 0.0;
     const std::size_t start = 300;
     for (std::size_t d = start; d < n_days; ++d) {
-        const long double dk = km.beta[d] - true_beta[d];
-        const long double dob = b_ols - true_beta[d];
+        const double dk = km.beta[d] - true_beta[d];
+        const double dob = b_ols - true_beta[d];
         se_k += dk * dk;
         se_o += dob * dob;
     }

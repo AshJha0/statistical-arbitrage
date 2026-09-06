@@ -99,11 +99,12 @@ demo regresses `walk_a` on `walk_b`:
 - slope t-statistic ≈ **8.4** — "significant" at any conventional level by
   the naive ±2 rule;
 - ADF on `walk_a` levels: t = **−1.0945** against a 5% critical value of
-  −2.86 — the unit root is *not* rejected (golden `adf_random_walk_tstat`,
+  −2.8635 (MacKinnon 2010, T_eff = 1498; golden `adf_random_walk_crit5`) —
+  the unit root is *not* rejected (golden `adf_random_walk_tstat`,
   `adf_random_walk_reject`);
 - ADF on the regression residuals: t = **−1.154** against the 2-variable
-  Engle–Granger 5% value of −3.34 — not cointegrated (golden
-  `eg_spurious_coint` = 0.0).
+  Engle–Granger 5% value of −3.3402 (T_eff = 1498) — not cointegrated
+  (golden `eg_spurious_coint` = 0.0).
 
 The residual test is the tell: the "relationship" leaves behind a
 nonstationary residual, so it is spurious, and the toolkit refuses to
@@ -185,14 +186,33 @@ Under the null ρ = 0 the regressor $y_{t-1}$ is itself a random walk, so the
 t-ratio does **not** follow a Student-t or normal distribution. Its limit is
 the Dickey–Fuller distribution — a functional of Brownian motion, shifted
 left and left-skewed. Using ±1.96 would reject a true unit root far too
-often. The embedded MacKinnon-style asymptotic values (constant, no trend)
-are:
+often. The embedded values are MacKinnon's (2010) **response surfaces**
+(constant, no trend): the asymptotic value plus finite-sample correction
+terms in the effective regression size $T_{\text{eff}}$,
 
-| nvars | use                        |   1%  |   5%  |  10%  |
-|-------|----------------------------|-------|-------|-------|
-| 1     | plain ADF on one series    | −3.43 | −2.86 | −2.57 |
-| 2     | EG residual test, 2 vars   | −3.90 | −3.34 | −3.04 |
-| 3     | EG residual test, 3 vars   | −4.29 | −3.74 | −3.45 |
+```math
+cv(T_{\text{eff}}) = \beta_\infty + \frac{\beta_1}{T_{\text{eff}}}
+  + \frac{\beta_2}{T_{\text{eff}}^2} + \frac{\beta_3}{T_{\text{eff}}^3}
+```
+
+whose asymptotic column $\beta_\infty$ is
+
+| nvars | use                        |    1%    |    5%    |   10%    |
+|-------|----------------------------|----------|----------|----------|
+| 1     | plain ADF on one series    | −3.43035 | −2.86154 | −2.56677 |
+| 2     | EG residual test, 2 vars   | −3.89644 | −3.33613 | −3.04445 |
+| 3     | EG residual test, 3 vars   | −4.29374 | −3.74066 | −3.45218 |
+
+(the full coefficient table is in API_SPEC §2). The corrections matter in
+exactly the samples desks use: the 5% value for one series is −2.8615
+asymptotically but **−2.92 at T_eff = 50 and −3.02 at T_eff = 20**; for the
+2-variable EG case −3.336 becomes −3.46 at T_eff = 50. A rolling 60-day pair
+screen that used the asymptotic numbers would declare cointegration for
+residual t-statistics in (−3.46, −3.34] that the finite-sample test rejects —
+systematic over-detection. The toolkit therefore always evaluates the
+surface at the actual regression size, and refuses tests with fewer than 20
+effective observations (the smallest sample in MacKinnon's simulations)
+rather than extrapolate.
 
 You reject the unit root when the t-stat is *more negative* than the critical
 value. Note −2.86 vs −1.65 for a one-sided normal test at 5%: the unit-root
@@ -206,14 +226,19 @@ residuals requires still-more-negative thresholds.
 The exact MacKinnon (1994) response-surface p-value is deliberately not
 implemented. Instead the p-value is a documented approximation:
 piecewise-linear interpolation of the significance level through the knots
-(cv₁%, 0.01), (cv₅%, 0.05), (cv₁₀%, 0.10), extrapolating with the edge
-slopes, clamped to [1e−4, 0.9999]. Worked example on the in-sample EG
-residuals (t = −5.8244, nvars = 2): t ≤ cv₅% = −3.34, so use the 1%–5%
-segment with slope (0.05 − 0.01)/(−3.34 + 3.90) = 0.0714 per unit t;
-p = 0.01 + 0.0714 × (−5.8244 + 3.90) = −0.127 → clamped to **0.0001**,
-which is what the demo prints. The *verdict* (`reject`) never uses the
-p-value — it compares the t-stat to the table directly, so the approximation
-cannot change any decision at the three supported levels.
+(cv₁%, 0.01), (cv₅%, 0.05), (cv₁₀%, 0.10) evaluated at the test's own
+T_eff, extrapolating with the edge slopes, clamped to [1e−4, 0.9999].
+Worked example on the in-sample EG residuals (t = −5.8244, nvars = 2,
+T_eff = 898, so cv₁% = −3.9087 and cv₅% = −3.3429): t ≤ cv₅%, so use the
+1%–5% segment with slope (0.05 − 0.01)/(−3.3429 + 3.9087) = 0.0707 per
+unit t; p = 0.01 + 0.0707 × (−5.8244 + 3.9087) = −0.126 → clamped to
+**0.0001**, which is what the demo prints. On the bundled random walk
+(t = −1.0945, T_eff = 1498, cv₅% = −2.8635, cv₁₀% = −2.5678) the 5%–10%
+segment gives p = 0.05 + 0.169 × (−1.0945 + 2.8635) = **0.3491** (golden
+`adf_random_walk_pvalue`). The *verdict* (`reject`) never uses the
+p-value — it compares the t-stat to the finite-sample table directly, so
+the approximation cannot change any decision at the three supported
+levels.
 
 ### 4.4 Power: the test's real weakness
 
@@ -251,7 +276,8 @@ mistake in home-grown EG tests.
 - Step 1: $y = 17.3603 + 1.6389\,x$, R² = 0.9793 (true generator beta 1.7 —
   OLS lands close but not exactly, as it should on one noisy sample).
 - Step 2: ADF(resid, maxlag 1) t = **−5.8244** (golden
-  `adf_resid_insample_tstat`), far below −3.34 → cointegrated at 5%
+  `adf_resid_insample_tstat`), far below the 2-variable 5% value −3.3429 at
+  T_eff = 898 (golden `adf_resid_insample_crit5`) → cointegrated at 5%
   (golden `eg_pair_insample_coint` = 1.0).
 
 ### 5.3 Limitations (honest list)
@@ -482,9 +508,10 @@ P = (I-KH)\,P_{\text{pred}}\,(I-KH)' + K r K'
 is a sum of a congruence of a PSD matrix and a PSD rank-one term — it stays
 symmetric PSD under rounding *by construction* (the implementation also
 re-symmetrises P := (P+P')/2 to kill the last bits of asymmetry). It costs a
-few extra flops on a 2×2 matrix, i.e. nothing, and buys cross-language
-bit-agreement at 1e−8. The test suite verifies PSD-ness via the 2×2
-closed-form eigenvalues at every step.
+few extra flops on a 2×2 matrix, i.e. nothing, and keeps the four ports
+within the 1e−8 golden tolerance over 1500 filtering steps even though each
+accumulates rounding differently. The test suite verifies PSD-ness via the
+2×2 closed-form eigenvalues on the final posterior.
 
 ### 8.4 Innovation z-scores
 
@@ -513,7 +540,10 @@ cost is model dependence: mis-set δ or r and the z-scores are mis-scaled.
    embed look-ahead and can turn a losing strategy into a paper star.
    Position sizing is equal-dollar per leg (capital/2 each side), exactly
    dollar-neutral at entry; β lives in the *signal*, not the leg sizes, and
-   quantities are then frozen for the life of the trade.
+   quantities are then frozen for the life of the trade. A signal on the
+   last available close is *discarded*, never executed and force-closed at
+   the same close: a rolling daily re-run therefore never reports a
+   phantom zero-day round trip that paid two costs.
 
 ### 9.2 Costs
 
@@ -561,7 +591,43 @@ drifting up on rolling windows, rolling ADF t-stats decaying toward zero,
 Kalman innovation z-scores running persistently one-sided, and — most
 reliable of all — knowing the corporate/news calendar of both legs.
 
-### 9.5 Equity vs FX conventions
+### 9.5 How a desk would use this
+
+A realistic daily loop around the toolkit, in the order the functions are
+meant to be called:
+
+1. **Universe and hygiene.** Load adjusted closes (splits, dividends,
+   corporate actions applied upstream), one row per trading day, aligned
+   across both legs. `load_csv` refuses non-finite cells and a non-monotone
+   `day` column; it does *not* fill gaps — that is your data pipeline's job.
+2. **Screen candidates.** For each economically linked pair run
+   `engle_granger` on a fitting window of at least 250 days (the finite-sample
+   critical values are used at whatever T_eff you supply, but power below a
+   year of data is poor — §4.4) and demand `cointegrated(0.05)`; confirm
+   with `johansen_trace` rank ≥ 1, and require `half_life` in a tradeable
+   band (days to a few weeks — both sentinels `+inf` and `0.0` mean "skip").
+   Screening thousands of pairs guarantees false positives (§11.8): rank by
+   economic story first, statistics second.
+3. **Fix the hedge and signal.** Use the in-sample (α, β) with
+   `rolling_zscore(spread(...), W)` where W ≈ several half-lives, or run
+   `kalman_hedge` and use its `beta` path if the ratio is expected to drift.
+   Never re-estimate the hedge on the data you evaluate.
+4. **Evaluate honestly.** `walk_forward` with the same `BacktestConfig` you
+   would trade: costs at or above what your broker charges, `stop_z` set
+   where a dislocation is more likely a break than a bargain. Judge the
+   out-of-sample segment only; the bundled example's in-sample Sharpe +1.49
+   versus out-of-sample −1.37 is the lesson.
+5. **Run and monitor.** Each day append the new close, re-run the z-score,
+   act on the *pending* order the state machine emits for the next close,
+   and re-run the diagnostics on a trailing window: rolling ADF t drifting
+   toward zero, half-life lengthening, Kalman innovation z-scores running
+   one-sided, or a stop firing all say "the leash may have snapped".
+6. **Know the limits.** Returns are on gross notional (no compounding, no
+   financing, no borrow), one-day execution lag only, no calendar, no
+   impact model; size for the fact that everyone else with the same
+   textbook holds the same spread (§10).
+
+### 9.6 Equity vs FX conventions
 
 - **Equity pairs**: price levels (or log prices) of two stocks; borrow
   availability and fees on the short leg matter; dividends and corporate
@@ -651,6 +717,20 @@ the state machine, and an accounting identity test (equity change ≡ Σpnl −
 10. **Log vs level inconsistency.** FX identities require logs; mixing a
     log-based signal with level-based sizing (or vice versa) mis-scales
     every position.
+11. **Asymptotic critical values on short windows.** The 5% ADF value is
+    −2.86 only as T → ∞; at 50 observations it is −2.92, at 20 it is −3.02,
+    and the EG 2-variable value moves from −3.34 to −3.46 at T = 50. Rolling
+    screens on 60-day windows with the asymptotic table over-detect
+    cointegration; the toolkit evaluates the MacKinnon (2010) surface at the
+    actual sample size and refuses T_eff < 20.
+12. **Unsorted or duplicated dates.** A CSV exported in a different order or
+    with a duplicated row after a merge silently changes every lag,
+    z-score and fill. The loaders refuse a `day` column that is not strictly
+    increasing; equal spacing is still the caller's responsibility.
+13. **End-of-data phantom trades.** A backtester that executes a
+    last-day entry and force-closes it at the same close reports an extra
+    losing round trip on every rolling re-run. The pinned rule discards a
+    pending entry at the end of data.
 
 ---
 
@@ -677,7 +757,8 @@ from the plain ADF test?**
 Because the residuals are estimated: OLS picks the coefficients that make the
 residuals look as stationary as possible, biasing the ADF statistic downward.
 Compensating requires more negative critical values, growing with the number
-of estimated variables (−2.86 → −3.34 → −3.74 at 5% for 1/2/3 variables).
+of estimated variables (asymptotically −2.862 → −3.336 → −3.741 at 5% for
+1/2/3 variables, and more negative still in finite samples).
 
 **Q4. What does the rank of Π in a VECM tell you, and how does the trace test
 find it?**
@@ -753,9 +834,13 @@ alongside everyone who holds what you hold.
 - Osterwald-Lenum, M. (1992). "A Note with Quantiles of the Asymptotic
   Distribution of the ML Cointegration Rank Test Statistics." *Oxford
   Bulletin of Economics and Statistics* 54, 461–472. — the trace tables.
-- MacKinnon, J. (1994/2010). "Critical Values for Cointegration Tests."
-  — the response-surface critical values approximated by this package's
-  tables.
+- MacKinnon, J. G. (2010). "Critical Values for Cointegration Tests."
+  Queen's Economics Department Working Paper 1227. — the finite-sample
+  response-surface critical values embedded verbatim in every port.
+- MacKinnon, J. G. (1994). "Approximate Asymptotic Distribution Functions
+  for Unit-Root and Cointegration Tests." *Journal of Business & Economic
+  Statistics* 12(2), 167–176. — the exact p-value surface this package
+  replaces by piecewise-linear interpolation.
 - Hamilton, J. (1994). *Time Series Analysis*. Princeton. — chapters 15–20
   cover unit roots through VECMs rigorously.
 - Harvey, A. (1989). *Forecasting, Structural Time Series Models and the

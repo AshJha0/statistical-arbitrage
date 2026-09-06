@@ -14,6 +14,12 @@ Matrix Matrix::identity(std::size_t n) {
     return m;
 }
 
+double compensated_sum(const std::vector<double>& v) {
+    NeumaierSum acc;
+    for (double x : v) acc.add(x);
+    return acc.value();
+}
+
 bool all_finite(const std::vector<double>& v) {
     for (double x : v) {
         if (!std::isfinite(x)) return false;
@@ -27,11 +33,9 @@ double dot(const std::vector<double>& a, const std::vector<double>& b) {
     if (a.size() != b.size()) {
         throw std::invalid_argument("dot: length mismatch");
     }
-    long double acc = 0.0L;
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        acc += static_cast<long double>(a[i]) * static_cast<long double>(b[i]);
-    }
-    return static_cast<double>(acc);
+    NeumaierSum acc;
+    for (std::size_t i = 0; i < a.size(); ++i) acc.add(a[i] * b[i]);
+    return acc.value();
 }
 
 Matrix matmul(const Matrix& a, const Matrix& b) {
@@ -41,12 +45,9 @@ Matrix matmul(const Matrix& a, const Matrix& b) {
     Matrix c(a.rows(), b.cols());
     for (std::size_t i = 0; i < a.rows(); ++i) {
         for (std::size_t j = 0; j < b.cols(); ++j) {
-            long double acc = 0.0L;
-            for (std::size_t k = 0; k < a.cols(); ++k) {
-                acc += static_cast<long double>(a(i, k)) *
-                       static_cast<long double>(b(k, j));
-            }
-            c(i, j) = static_cast<double>(acc);
+            NeumaierSum acc;
+            for (std::size_t k = 0; k < a.cols(); ++k) acc.add(a(i, k) * b(k, j));
+            c(i, j) = acc.value();
         }
     }
     return c;
@@ -66,12 +67,9 @@ std::vector<double> matvec(const Matrix& a, const std::vector<double>& v) {
     }
     std::vector<double> out(a.rows());
     for (std::size_t i = 0; i < a.rows(); ++i) {
-        long double acc = 0.0L;
-        for (std::size_t j = 0; j < a.cols(); ++j) {
-            acc += static_cast<long double>(a(i, j)) *
-                   static_cast<long double>(v[j]);
-        }
-        out[i] = static_cast<double>(acc);
+        NeumaierSum acc;
+        for (std::size_t j = 0; j < a.cols(); ++j) acc.add(a(i, j) * v[j]);
+        out[i] = acc.value();
     }
     return out;
 }
@@ -109,12 +107,9 @@ Matrix solve(Matrix a, Matrix b) {
     Matrix x(n, b.cols());
     for (std::size_t jc = 0; jc < b.cols(); ++jc) {
         for (std::size_t ri = n; ri-- > 0;) {
-            long double acc = b(ri, jc);
-            for (std::size_t j = ri + 1; j < n; ++j) {
-                acc -= static_cast<long double>(a(ri, j)) *
-                       static_cast<long double>(x(j, jc));
-            }
-            x(ri, jc) = static_cast<double>(acc / a(ri, ri));
+            double acc = b(ri, jc);
+            for (std::size_t j = ri + 1; j < n; ++j) acc -= a(ri, j) * x(j, jc);
+            x(ri, jc) = acc / a(ri, ri);
         }
     }
     return x;
@@ -141,26 +136,22 @@ Matrix cholesky_lower(const Matrix& a) {
     if (a.cols() != n) {
         throw std::invalid_argument("cholesky_lower: matrix must be square");
     }
+    if (!all_finite(a)) {
+        throw std::invalid_argument("inputs must be finite (no NaN/inf)");
+    }
     Matrix l(n, n, 0.0);
     for (std::size_t j = 0; j < n; ++j) {
-        long double acc = 0.0L;
-        for (std::size_t k = 0; k < j; ++k) {
-            acc += static_cast<long double>(l(j, k)) *
-                   static_cast<long double>(l(j, k));
-        }
-        const double d = a(j, j) - static_cast<double>(acc);
+        double d = a(j, j);
+        for (std::size_t k = 0; k < j; ++k) d -= l(j, k) * l(j, k);
         if (d <= 0.0) {
             throw std::invalid_argument(
                 "matrix is not positive definite (Cholesky pivot <= 0)");
         }
         l(j, j) = std::sqrt(d);
         for (std::size_t i = j + 1; i < n; ++i) {
-            long double s = 0.0L;
-            for (std::size_t k = 0; k < j; ++k) {
-                s += static_cast<long double>(l(i, k)) *
-                     static_cast<long double>(l(j, k));
-            }
-            l(i, j) = (a(i, j) - static_cast<double>(s)) / l(j, j);
+            double s = a(i, j);
+            for (std::size_t k = 0; k < j; ++k) s -= l(i, k) * l(j, k);
+            l(i, j) = s / l(j, j);
         }
     }
     return l;
@@ -171,14 +162,11 @@ namespace {
 /// Off-diagonal Frobenius norm sqrt(2 * sum_{i>j} a_ij^2), the pinned
 /// Jacobi convergence measure.
 double off_diagonal_norm(const Matrix& a) {
-    long double acc = 0.0L;
+    double acc = 0.0;
     for (std::size_t i = 1; i < a.rows(); ++i) {
-        for (std::size_t j = 0; j < i; ++j) {
-            acc += static_cast<long double>(a(i, j)) *
-                   static_cast<long double>(a(i, j));
-        }
+        for (std::size_t j = 0; j < i; ++j) acc += a(i, j) * a(i, j);
     }
-    return std::sqrt(static_cast<double>(acc) * 2.0);
+    return std::sqrt(acc * 2.0);
 }
 
 }  // namespace
@@ -187,6 +175,9 @@ EigenResult jacobi_eigh(const Matrix& a) {
     const std::size_t n = a.rows();
     if (a.cols() != n) {
         throw std::invalid_argument("jacobi_eigh requires a symmetric square matrix");
+    }
+    if (!all_finite(a)) {
+        throw std::invalid_argument("inputs must be finite (no NaN/inf)");
     }
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t j = i + 1; j < n; ++j) {
