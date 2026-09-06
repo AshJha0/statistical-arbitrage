@@ -3,7 +3,7 @@ flowchart TD
         CSV["pair_equity.csv / fx_triangle.csv / random_walks.csv"]
         CFG["config.json"]
     end
-    CSV --> IO["data_io: load_csv"]
+    CSV --> IO["data_io: load_csv\n(finite cells, monotone day column)"]
     CFG --> IOC["data_io: load_config"]
     IO --> EG["engle_granger\n(hedge alpha, beta + residual ADF)"]
     IO --> JO["johansen_trace\n(rank, cointegrating vectors)"]
@@ -18,7 +18,7 @@ flowchart TD
     BT --> MET["metrics: return, Sharpe,\nmaxDD, trades, turnover"]
     IO --> WF["walk_forward\n(60% fit / 40% trade)"]
     WF --> BT
-    MET --> GOLD["golden.json\n21 cross-language cases"]
+    MET --> GOLD["golden.json\n24 cross-language cases"]
     JO --> GOLD
     KF --> GOLD
     HL --> GOLD

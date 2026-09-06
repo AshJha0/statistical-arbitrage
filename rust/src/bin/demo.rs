@@ -50,7 +50,7 @@ fn run() -> Result<()> {
     let walks = load_csv(&data.join("random_walks.csv"))?;
     let y = &pair["stock_y"];
     let x = &pair["stock_x"];
-    let n_is = (y.len() as f64 * cfg["insample_frac"]) as usize;
+    let n_is = (y.len() as f64 * cfg["insample_frac"] + statarb::SPLIT_EPS).floor() as usize;
     let maxlag = cfg["adf_maxlag"] as usize;
     let bt_cfg = BacktestConfig::new(
         cfg["window"] as usize,

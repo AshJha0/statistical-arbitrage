@@ -117,9 +117,20 @@ pub(crate) fn inv(a: &[Vec<f64>]) -> Result<Matrix> {
 /// Native lower-triangular Cholesky factor of a small SPD matrix.
 ///
 /// Standard column-by-column algorithm (pinned); a pivot `<= 0` means the
-/// matrix is not positive definite and yields [`StatarbError::Singular`].
+/// matrix is not positive definite and yields [`StatarbError::Singular`];
+/// a non-square or non-finite input is an error too.
 pub fn cholesky_lower(a: &[Vec<f64>]) -> Result<Matrix> {
     let n = a.len();
+    if a.iter().any(|row| row.len() != n) {
+        return Err(StatarbError::InvalidParam(
+            "cholesky_lower requires a square matrix".to_string(),
+        ));
+    }
+    if !a.iter().all(|row| row.iter().all(|v| v.is_finite())) {
+        return Err(StatarbError::NonFinite(
+            "inputs must be finite (no NaN/inf)".to_string(),
+        ));
+    }
     let mut l = vec![vec![0.0; n]; n];
     for j in 0..n {
         let mut d = a[j][j];
@@ -156,6 +167,11 @@ pub fn cholesky_lower(a: &[Vec<f64>]) -> Result<Matrix> {
 ///
 /// Returns `(eigenvalues descending, eigenvector matrix with matching
 /// columns)`.
+///
+/// # Errors
+///
+/// [`StatarbError::InvalidParam`] unless `a` is square and symmetric;
+/// [`StatarbError::NonFinite`] on NaN/inf entries.
 pub fn jacobi_eigh(a: &[Vec<f64>]) -> Result<(Vec<f64>, Matrix)> {
     let n = a.len();
     for row in a {
@@ -164,6 +180,11 @@ pub fn jacobi_eigh(a: &[Vec<f64>]) -> Result<(Vec<f64>, Matrix)> {
                 "jacobi_eigh requires a symmetric square matrix".to_string(),
             ));
         }
+    }
+    if !a.iter().all(|row| row.iter().all(|v| v.is_finite())) {
+        return Err(StatarbError::NonFinite(
+            "inputs must be finite (no NaN/inf)".to_string(),
+        ));
     }
     for i in 0..n {
         for j in 0..n {
@@ -212,9 +233,10 @@ pub fn jacobi_eigh(a: &[Vec<f64>]) -> Result<(Vec<f64>, Matrix)> {
             }
         }
     }
-    // sort descending (stable ascending argsort, reversed — as the reference)
+    // sort descending (stable ascending argsort, reversed — as the reference);
+    // total_cmp cannot panic (the input is finite, so no NaN can appear)
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&i, &j| mat[i][i].partial_cmp(&mat[j][j]).unwrap());
+    order.sort_by(|&i, &j| mat[i][i].total_cmp(&mat[j][j]));
     order.reverse();
     let vals: Vec<f64> = order.iter().map(|&i| mat[i][i]).collect();
     let vecs: Matrix = (0..n)

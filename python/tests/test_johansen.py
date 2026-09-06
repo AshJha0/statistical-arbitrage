@@ -84,3 +84,52 @@ def test_error_paths(pair: dict) -> None:
     bad[3, 1] = np.nan
     with pytest.raises(ValueError, match="finite"):
         johansen_trace(bad)
+
+
+def test_johansen_matches_reference_generalized_eigenproblem(pair: dict, fx: dict) -> None:
+    """Proposed test 10: the pinned Cholesky + Jacobi route must agree with
+    an independent numpy solution of |lambda S11 - S10 S00^-1 S01| = 0 and
+    with statsmodels' coint_johansen (det_order=0, k_ar_diff=1)."""
+    from statsmodels.tsa.vector_ar.vecm import coint_johansen
+
+    Yp = np.column_stack([pair["stock_y"][:900], pair["stock_x"][:900]])
+    Yf = np.column_stack([np.log(fx["eurusd"]), np.log(fx["gbpusd"]),
+                          np.log(fx["eurgbp"])])
+    for Y in (Yp, Yf):
+        T, n = Y.shape
+        dY = np.diff(Y, axis=0)
+        Z0, Z1 = dY[1:], Y[1 : T - 1]
+        ZD = np.column_stack([np.ones(T - 2), dY[:-1]])
+        proj = ZD @ np.linalg.lstsq(ZD, np.column_stack([Z0, Z1]), rcond=None)[0]
+        R = np.column_stack([Z0, Z1]) - proj
+        R0, R1 = R[:, :n], R[:, n:]
+        t_eff = T - 2
+        S00, S01, S11 = R0.T @ R0 / t_eff, R0.T @ R1 / t_eff, R1.T @ R1 / t_eff
+        M = S01.T @ np.linalg.solve(S00, S01)
+        lam_ref = np.sort(np.real(np.linalg.eigvals(np.linalg.solve(S11, M))))[::-1]
+        trace_ref = np.array([-t_eff * np.sum(np.log(1.0 - lam_ref[r:])) for r in range(n)])
+        res = johansen_trace(Y)
+        assert np.allclose(res.eigenvalues, lam_ref, atol=1e-8)
+        assert np.allclose(res.trace_stats, trace_ref, atol=1e-6)
+        sm = coint_johansen(Y, det_order=0, k_ar_diff=1)
+        assert np.allclose(res.eigenvalues, np.sort(sm.eig)[::-1], atol=1e-8)
+        assert np.allclose(res.trace_stats, sm.lr1, atol=1e-6)
+
+
+def test_johansen_collinear_levels_rejected(pair: dict) -> None:
+    """Proposed test 11: exactly collinear level columns are refused."""
+    y, x = pair["stock_y"][:200], pair["stock_x"][:200]
+    with pytest.raises(ValueError, match="singular"):
+        johansen_trace(np.column_stack([y, 2.0 * y + 1.0]))
+    with pytest.raises(ValueError, match="singular"):
+        johansen_trace(np.column_stack([y, x, y + x]))
+
+
+def test_linalg_helpers_reject_nonfinite() -> None:
+    nan_m = np.array([[1.0, np.nan], [np.nan, 1.0]])
+    with pytest.raises(ValueError, match="finite"):
+        jacobi_eigh(nan_m)
+    with pytest.raises(ValueError, match="finite"):
+        cholesky_lower(nan_m)
+    with pytest.raises(ValueError, match="square"):
+        cholesky_lower(np.ones((2, 3)))

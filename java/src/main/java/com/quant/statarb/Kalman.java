@@ -62,7 +62,8 @@ public final class Kalman {
      *              {@code Q = delta/(1-delta) * I}
      * @param r     observation noise variance, &gt; 0
      * @throws IllegalArgumentException on length mismatch, fewer than 2
-     *     observations, non-finite input, delta outside (0, 1), or r &le; 0
+     *     observations, non-finite input, delta outside the open interval
+     *     (0, 1), or r not a finite number &gt; 0 (NaN and +inf rejected)
      */
     public static Result hedge(double[] y, double[] x, double delta, double r) {
         if (y.length != x.length) {
@@ -78,8 +79,9 @@ public final class Kalman {
         if (!(delta > 0.0 && delta < 1.0)) {
             throw new IllegalArgumentException("delta must lie strictly inside (0, 1)");
         }
-        if (r <= 0.0) {
-            throw new IllegalArgumentException("observation variance r must be > 0");
+        // negated comparison so NaN fails; +inf is rejected explicitly
+        if (!(r > 0.0 && Double.isFinite(r))) {
+            throw new IllegalArgumentException("observation variance r must be > 0 and finite");
         }
 
         int n = y.length;

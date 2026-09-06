@@ -178,3 +178,273 @@ fn backtest_input_validation() {
         Err(StatarbError::NonFinite(_))
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Synthetic-spread fixtures.  Every expected value is derived independently
+// of the backtest: z-scores are recomputed by `zpath` (plain rolling mean /
+// ddof-1 std) and closed forms are used where a window holds a single spike
+// on a zero background: z_spike = (W-1)/sqrt(W), z_next = -1/sqrt(W).
+// ---------------------------------------------------------------------------
+
+fn zpath(s: &[f64], w: usize) -> Vec<f64> {
+    let mut z = vec![f64::NAN; s.len()];
+    for t in (w - 1)..s.len() {
+        let win = &s[t + 1 - w..=t];
+        let m = win.iter().sum::<f64>() / w as f64;
+        let ss: f64 = win.iter().map(|v| (v - m) * (v - m)).sum();
+        let sd = (ss / (w - 1) as f64).sqrt();
+        if sd > 1e-12 {
+            z[t] = (s[t] - m) / sd;
+        }
+    }
+    z
+}
+
+fn max_abs_finite(z: &[f64]) -> f64 {
+    z.iter().filter(|v| v.is_finite()).fold(0.0, |m, v| m.max(v.abs()))
+}
+
+#[test]
+fn end_of_data_pending_entry_discarded() {
+    // proposed test 1 (CRIT-1): |z_{T-2}| in [entry, stop) while flat would
+    // execute at T-1 and be force-closed the same close; the spec discards it
+    let t_len = 80usize;
+    let x: Vec<f64> = (0..t_len).map(|t| 200.0 + 0.5 * (t as f64).sin()).collect();
+    let mut s: Vec<f64> = (0..t_len).map(|t| (0.7 * t as f64).sin()).collect();
+    s[t_len - 2] = 6.0;
+    let y: Vec<f64> = (0..t_len).map(|t| 10.0 + x[t] + s[t]).collect();
+    let cfg = BacktestConfig::new(20, 2.0, 0.5, 8.0, 1.0, 0.5, 1e6).unwrap();
+    let z = zpath(&s, 20);
+    assert!(max_abs_finite(&z[..t_len - 2]) < 2.0);
+    assert!(z[t_len - 2] >= 2.0 && z[t_len - 2] < 8.0);
+    let res = backtest_pair(&y, &x, 10.0, 1.0, &cfg).unwrap();
+    assert!(res.trades.is_empty());
+    assert_eq!(res.metrics.n_trades, 0);
+    assert_eq!(res.metrics.turnover, 0.0);
+    assert!(res.equity.iter().all(|&e| e == 1e6));
+    assert!(res.daily_cost.iter().all(|&c| c == 0.0));
+}
+
+#[test]
+fn zero_day_roundtrip_never_reported() {
+    // proposed test 2: over every truncation of the bundled pair no trade may
+    // ever have exit_day == entry_day (would have caught CRIT-1)
+    let (y, x, cfg, a, b) = bundled();
+    for t_len in 70..=y.len() {
+        let res = backtest_pair(&y[..t_len], &x[..t_len], a, b, &cfg).unwrap();
+        for tr in &res.trades {
+            assert!(tr.exit_day > tr.entry_day, "T={t_len}: {tr:?}");
+            assert!(tr.exit_day <= t_len - 1);
+        }
+    }
+}
+
+#[test]
+fn stop_band_while_flat_no_entry() {
+    // proposed test 3: a single spike on a zero background gives
+    // z = (W-1)/sqrt(W) = 6.166 >= stop_z while flat (no entry, pinned) and
+    // z = -1/sqrt(W) the next day: no trades, flat equity
+    let (t_len, w, t0) = (120usize, 40usize, 60usize);
+    let mut s = vec![0.0; t_len];
+    s[t0] = 7.0;
+    let x = vec![50.0; t_len];
+    let y: Vec<f64> = s.iter().map(|v| 100.0 + v).collect(); // alpha 50, beta 1
+    let cfg = BacktestConfig::new(w, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6).unwrap();
+    let z = zpath(&s, w);
+    assert!((z[t0] - (w as f64 - 1.0) / (w as f64).sqrt()).abs() < 1e-12);
+    assert!((z[t0 + 1] + 1.0 / (w as f64).sqrt()).abs() < 1e-12);
+    assert!(z[t0] >= cfg.stop_z);
+    assert!(z[..t0].iter().all(|v| v.is_nan()));
+    let res = backtest_pair(&y, &x, 50.0, 1.0, &cfg).unwrap();
+    assert!(res.trades.is_empty());
+    assert!(res.equity.iter().all(|&e| e == 1e6));
+}
+
+#[test]
+fn stop_exit_is_flagged_and_executes_next_day() {
+    // proposed test 12: entry band at t0, in-position plateau, |z| >= stop at
+    // t1 = t0+3 -> one trade, stopped, exit_day == t1+1, exit-day cost equals
+    // bps * exit notional recomputed from the pinned legs
+    let (t_len, w, t0) = (160usize, 40usize, 70usize);
+    let mut s: Vec<f64> = (0..t_len).map(|t| 0.2 * (0.7 * t as f64).sin()).collect();
+    let x: Vec<f64> = (0..t_len).map(|t| 200.0 + 0.5 * (t as f64).sin()).collect();
+    s[t0] = 0.5;
+    s[t0 + 1] = 0.5;
+    s[t0 + 2] = 0.5;
+    s[t0 + 3] = 5.0;
+    let y: Vec<f64> = (0..t_len).map(|t| 10.0 + x[t] + s[t]).collect();
+    let cfg = BacktestConfig::new(w, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6).unwrap();
+    let z = zpath(&s, w);
+    assert!(max_abs_finite(&z[..t0]) < cfg.entry_z);
+    assert!(z[t0] >= cfg.entry_z && z[t0] < cfg.stop_z);
+    for &v in &z[t0 + 1..t0 + 3] {
+        assert!(v.abs() > cfg.exit_z && v.abs() < cfg.stop_z);
+    }
+    assert!(z[t0 + 3] >= cfg.stop_z);
+    assert!(max_abs_finite(&z[t0 + 4..]) < cfg.entry_z);
+    let res = backtest_pair(&y, &x, 10.0, 1.0, &cfg).unwrap();
+    assert_eq!(res.trades.len(), 1);
+    let tr = &res.trades[0];
+    assert_eq!((tr.entry_day, tr.exit_day, tr.direction, tr.stopped), (t0 + 1, t0 + 4, -1, true));
+    assert_eq!(res.n_stops(), 1);
+    let (bps, cap) = (1.5e-4, 1e6);
+    let qy = -(cap / 2.0) / y[t0 + 1];
+    let qx = (cap / 2.0) / x[t0 + 1];
+    assert!((res.daily_cost[t0 + 1] - cap * bps).abs() < 1e-9);
+    let exit_notional = qy.abs() * y[t0 + 4] + qx.abs() * x[t0 + 4];
+    assert!((res.daily_cost[t0 + 4] - exit_notional * bps).abs() < 1e-9);
+    assert!(res.daily_cost[t0 + 4] > 0.0);
+    assert_eq!(res.metrics.avg_holding_days, 3.0);
+}
+
+#[test]
+fn reentry_after_exit_same_direction() {
+    // proposed test 13: enter-short, exit, enter-short again with no
+    // cool-down: two trades with entry_day_2 == exit_day_1 + 1
+    let (t_len, w, t0) = (160usize, 40usize, 70usize);
+    let mut s: Vec<f64> = (0..t_len).map(|t| 0.2 * (0.7 * t as f64).sin()).collect();
+    let x: Vec<f64> = (0..t_len).map(|t| 200.0 + 0.5 * (t as f64).sin()).collect();
+    s[t0] = 0.5;
+    s[t0 + 1] = 0.0;
+    s[t0 + 2] = 0.5;
+    s[t0 + 3] = 0.0;
+    let y: Vec<f64> = (0..t_len).map(|t| 10.0 + x[t] + s[t]).collect();
+    let cfg = BacktestConfig::new(w, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6).unwrap();
+    let z = zpath(&s, w);
+    assert!(z[t0] >= cfg.entry_z && z[t0] < cfg.stop_z);
+    assert!(z[t0 + 1].abs() <= cfg.exit_z);
+    assert!(z[t0 + 2] >= cfg.entry_z && z[t0 + 2] < cfg.stop_z);
+    assert!(z[t0 + 3].abs() <= cfg.exit_z);
+    assert!(max_abs_finite(&z[..t0]) < cfg.entry_z);
+    assert!(max_abs_finite(&z[t0 + 4..]) < cfg.entry_z);
+    let res = backtest_pair(&y, &x, 10.0, 1.0, &cfg).unwrap();
+    let got: Vec<(usize, usize, i32, bool)> = res
+        .trades
+        .iter()
+        .map(|t| (t.entry_day, t.exit_day, t.direction, t.stopped))
+        .collect();
+    assert_eq!(got, vec![(t0 + 1, t0 + 2, -1, false), (t0 + 3, t0 + 4, -1, false)]);
+    assert_eq!(res.trades[1].entry_day, res.trades[0].exit_day + 1);
+}
+
+#[test]
+fn equity_nonpositive_metrics_defined() {
+    // proposed test 14 (MIN-11): a 4x jump on the short leg loses 1.5x
+    // capital: total_return = -1.5 exactly, ann_return pinned to -1.0,
+    // max_drawdown = 1.5, finite Sharpe, no NaN anywhere
+    let (t_len, w, t0) = (45usize, 40usize, 40usize);
+    let mut s: Vec<f64> = (0..t_len).map(|t| 0.2 * (0.7 * t as f64).sin()).collect();
+    for v in s.iter_mut().skip(t0) {
+        *v = -0.5; // long-spread entry band
+    }
+    let mut x = vec![50.0; t_len];
+    for v in x.iter_mut().skip(t0 + 2) {
+        *v = 200.0; // short leg quadruples after entry
+    }
+    let y: Vec<f64> = s.iter().map(|v| 100.0 + v).collect(); // alpha 50, beta 1
+    let cfg = BacktestConfig::new(w, 2.0, 0.5, 4.0, 0.0, 0.0, 1e6).unwrap();
+    let res = backtest_pair(&y, &x, 50.0, 1.0, &cfg).unwrap();
+    assert_eq!(res.trades.len(), 1);
+    let tr = &res.trades[0];
+    assert_eq!((tr.entry_day, tr.exit_day, tr.direction, tr.stopped), (t0 + 1, t0 + 3, 1, true));
+    assert!((tr.pnl + 1.5e6).abs() < 1e-6); // q_x = -1e4 shares * 150
+    assert!((res.equity[t_len - 1] + 5.0e5).abs() < 1e-6);
+    let m = &res.metrics;
+    assert!((m.total_return + 1.5).abs() < 1e-12);
+    assert_eq!(m.ann_return, -1.0);
+    assert!((m.max_drawdown - 1.5).abs() < 1e-12);
+    let (ret, n) = (-1.5_f64, t_len as f64);
+    let mean = ret / n;
+    let var = ((n - 1.0) * mean * mean + (ret - mean) * (ret - mean)) / (n - 1.0);
+    assert!((m.sharpe - mean / var.sqrt() * 252.0_f64.sqrt()).abs() < 1e-10);
+    assert!((m.turnover - 3.5).abs() < 1e-12); // 1e6 in, 2.5e6 out
+    assert!(m.win_rate.is_finite() && m.avg_holding_days.is_finite());
+}
+
+#[test]
+fn backtest_config_rejects_nonfinite() {
+    // proposed test 5 (MAJ-2)
+    let bad = [
+        BacktestConfig::new(60, 2.0, 0.5, 4.0, f64::NAN, 0.5, 1e6),
+        BacktestConfig::new(60, 2.0, 0.5, 4.0, 1.0, f64::INFINITY, 1e6),
+        BacktestConfig::new(60, f64::NAN, 0.5, 4.0, 1.0, 0.5, 1e6),
+        BacktestConfig::new(60, 2.0, 0.5, f64::NAN, 1.0, 0.5, 1e6),
+        BacktestConfig::new(60, 2.0, f64::NEG_INFINITY, 4.0, 1.0, 0.5, 1e6),
+        BacktestConfig::new(60, 2.0, 0.5, f64::INFINITY, 1.0, 0.5, 1e6),
+        BacktestConfig::new(60, 2.0, 0.5, 4.0, 1.0, 0.5, f64::NAN),
+    ];
+    for b in bad {
+        assert!(matches!(b, Err(StatarbError::InvalidParam(_))));
+    }
+}
+
+#[test]
+fn config_revalidated_at_run() {
+    // proposed test 6 (MAJ-4): a struct literal that bypasses `new` is
+    // re-validated by backtest_pair / walk_forward
+    let cfg = BacktestConfig {
+        window: 20,
+        entry_z: 2.0,
+        exit_z: 5.0, // breaks exit_z < entry_z
+        stop_z: 4.0,
+        cost_bps: 1.0,
+        slippage_bps: 0.5,
+        capital: 1e6,
+    };
+    let p: Vec<f64> = (0..100).map(|i| 50.0 + (0.1 * i as f64).sin()).collect();
+    let q: Vec<f64> = (0..100).map(|i| 30.0 + (0.3 * i as f64).cos()).collect();
+    assert!(matches!(
+        backtest_pair(&p, &q, 0.0, 1.0, &cfg),
+        Err(StatarbError::InvalidParam(_))
+    ));
+    assert!(matches!(
+        walk_forward(&p, &q, &cfg, 0.5),
+        Err(StatarbError::InvalidParam(_))
+    ));
+    let zero_cap = BacktestConfig { exit_z: 0.5, capital: 0.0, ..cfg.clone() };
+    assert!(matches!(
+        backtest_pair(&p, &q, 0.0, 1.0, &zero_cap),
+        Err(StatarbError::InvalidParam(_))
+    ));
+}
+
+#[test]
+fn walk_forward_length_mismatch_is_typed_error() {
+    // proposed test 7 (MAJ-5): previously an index-out-of-range panic
+    let (y, x, cfg, _, _) = bundled();
+    assert!(matches!(
+        walk_forward(&y[..1500], &x[..100], &cfg, 0.6),
+        Err(StatarbError::LengthMismatch(_))
+    ));
+}
+
+#[test]
+fn walk_forward_split_exact() {
+    // proposed test 8 (MIN-10): floor(T * frac) is the intended integer
+    // (700 * 0.7 == 489.99999999999994 in binary floating point)
+    let cfg = BacktestConfig::new(5, 50.0, 0.5, 60.0, 1.0, 0.5, 1e6).unwrap();
+    for (t_len, frac, expected) in [(700usize, 0.7, 490usize), (100, 0.29, 29), (1500, 0.6, 900)] {
+        let y: Vec<f64> = (0..t_len).map(|t| 100.0 + (0.3 * t as f64).sin()).collect();
+        let x: Vec<f64> = (0..t_len).map(|t| 50.0 + (0.2 * t as f64).cos()).collect();
+        assert_eq!(walk_forward(&y, &x, &cfg, frac).unwrap().split, expected, "T={t_len}");
+    }
+}
+
+#[test]
+fn compute_metrics_validation() {
+    use statarb::compute_metrics;
+    assert!(matches!(
+        compute_metrics(&[], 1e6, &[]),
+        Err(StatarbError::InvalidParam(_))
+    ));
+    assert!(matches!(
+        compute_metrics(&[1e6, f64::NAN], 1e6, &[]),
+        Err(StatarbError::NonFinite(_))
+    ));
+    assert!(matches!(
+        compute_metrics(&[1e6], 0.0, &[]),
+        Err(StatarbError::InvalidParam(_))
+    ));
+    let m = compute_metrics(&[1e6], 1e6, &[]).unwrap();
+    assert_eq!((m.sharpe, m.total_return, m.max_drawdown), (0.0, 0.0, 0.0));
+}

@@ -84,7 +84,11 @@ pub fn rolling_zscore(s: &[f64], window: usize) -> Result<Vec<f64>> {
 /// intercept); then `half_life = -ln(2) / ln(1 + rho)`.
 ///
 /// Guards (pinned): `rho >= 0` (no reversion) returns `+inf`;
-/// `1 + rho <= 0` (over-shooting flip) returns `0.0`.
+/// `1 + rho <= 0` returns the sentinel `0.0`. Both sentinels mean "the
+/// AR(1) fit is not interpretable as a half-life — do not trade this
+/// spread" (`0.0` covers both the oscillating `-2 < rho < -1` and the
+/// explosive `rho <= -2` cases and deliberately does not distinguish
+/// them); a filter such as `0 < hl < 30` excludes both.
 ///
 /// # Errors
 ///

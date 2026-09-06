@@ -91,7 +91,11 @@ public final class Signals {
      * intercept); then {@code half_life = -ln(2) / ln(1 + rho)}.
      *
      * <p>Guards (pinned): {@code rho >= 0} (no reversion) returns +inf;
-     * {@code 1 + rho <= 0} (over-shooting flip) returns 0.0.
+     * {@code 1 + rho <= 0} returns the sentinel 0.0. Both sentinels mean "the
+     * AR(1) fit is not interpretable as a half-life — do not trade this
+     * spread" (0.0 covers both the oscillating {@code -2 < rho < -1} and the
+     * explosive {@code rho <= -2} cases and deliberately does not distinguish
+     * them); a filter such as {@code 0 < hl < 30} excludes both.
      *
      * @throws IllegalArgumentException on fewer than 12 observations,
      *     constant series, or non-finite input

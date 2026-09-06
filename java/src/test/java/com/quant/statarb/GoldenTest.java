@@ -13,6 +13,9 @@ import org.junit.Test;
  */
 public class GoldenTest {
 
+    /** Exact number of golden cases (kept in step with generate_data.py). */
+    static final int GOLDEN_COUNT = 24;
+
     // Heavy pipelines computed once and shared across cases.
     private static EngleGranger.Result egInsample;
     private static Kalman.Result kalman;
@@ -63,10 +66,21 @@ public class GoldenTest {
             case "ols_pair_r2":
                 return Ols.fit(y, x, true).r2();
             case "adf_random_walk_tstat":
-            case "adf_random_walk_reject": {
+            case "adf_random_walk_reject":
+            case "adf_random_walk_crit5":
+            case "adf_random_walk_pvalue": {
                 double[] col = TestData.walks().get((String) inputs.get("column"));
                 Adf.Result res = Adf.test(col, maxlag, 1);
-                return name.endsWith("tstat") ? res.tstat() : (res.reject(0.05) ? 1.0 : 0.0);
+                if (name.endsWith("tstat")) {
+                    return res.tstat();
+                }
+                if (name.endsWith("reject")) {
+                    return res.reject(0.05) ? 1.0 : 0.0;
+                }
+                if (name.endsWith("crit5")) {
+                    return res.crit5();
+                }
+                return res.pvalue();
             }
             case "eg_spurious_coint": {
                 EngleGranger.Result eg = EngleGranger.test(
@@ -75,6 +89,8 @@ public class GoldenTest {
             }
             case "adf_resid_insample_tstat":
                 return egInsample().adf().tstat();
+            case "adf_resid_insample_crit5":
+                return egInsample().adf().crit5();
             case "eg_pair_insample_coint":
                 return egInsample().cointegrated(0.05) ? 1.0 : 0.0;
             case "halflife_insample_spread":
@@ -121,7 +137,7 @@ public class GoldenTest {
     @Test
     public void allGoldenCasesAgree() {
         List<Map<String, Object>> cases = TestData.golden();
-        assertTrue("expected at least 18 golden cases", cases.size() >= 18);
+        assertEquals("golden case count must be exact", GOLDEN_COUNT, cases.size());
         for (Map<String, Object> c : cases) {
             String name = (String) c.get("name");
             @SuppressWarnings("unchecked")

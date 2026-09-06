@@ -74,10 +74,18 @@ public final class Ols {
             throw new IllegalArgumentException(
                     "series length mismatch: len(y)=" + n + ", len(x)=" + x.length);
         }
+        if (n == 0) {
+            throw new IllegalArgumentException("need more observations than parameters: n=0");
+        }
         if (!(LinAlg.allFinite(y) && LinAlg.allFinite(x))) {
             throw new IllegalArgumentException("inputs must be finite (no NaN/inf)");
         }
         int m = x[0].length;
+        for (double[] row : x) {
+            if (row.length != m) {
+                throw new IllegalArgumentException("regressor rows must have equal length");
+            }
+        }
         double[][] design;
         if (intercept) {
             design = new double[n][m + 1];

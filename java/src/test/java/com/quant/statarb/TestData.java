@@ -70,7 +70,8 @@ final class TestData {
 
     /** In-sample day count floor(T * insample_frac) for the bundled pair. */
     static int insampleDays() {
-        return (int) (pair().get("stock_y").length * config().get("insample_frac"));
+        return (int) Math.floor(pair().get("stock_y").length * config().get("insample_frac")
+                + Backtest.SPLIT_EPS);
     }
 
     static double[] slice(double[] a, int from, int to) {

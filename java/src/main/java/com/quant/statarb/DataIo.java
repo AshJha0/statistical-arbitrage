@@ -9,8 +9,22 @@ import java.util.Map;
 
 /**
  * Tiny CSV / flat-JSON loaders so the package stays dependency-free.
+ *
+ * <p>Validation (pinned across languages): the file must exist and hold a
+ * header plus at least one data row; every row must have exactly as many
+ * cells as the header; every cell must parse as a FINITE number (NaN/inf
+ * are rejected, not propagated); column names must be unique; and if a
+ * column named {@code day} exists it must be strictly increasing — an
+ * unsorted, duplicated or re-merged time index silently changes every lag,
+ * z-score and fill in the backtest. The models further assume the rows are
+ * EQUALLY SPACED consecutive observations (next-close execution, lag-1
+ * differences, sqrt(252)); gaps are the caller's responsibility
+ * (API_SPEC section 10).
  */
 public final class DataIo {
+
+    /** Name of the optional time-index column validated on load. */
+    public static final String DAY_COLUMN = "day";
 
     private DataIo() {
     }
@@ -18,8 +32,9 @@ public final class DataIo {
     /**
      * Load a simple headered numeric CSV into {column name -&gt; double[]}.
      *
-     * @throws IllegalArgumentException on a missing file, empty file, or
-     *     ragged/non-numeric rows
+     * @throws IllegalArgumentException on a missing file, empty file,
+     *     ragged, non-numeric or non-finite rows, duplicate column names, or a
+     *     {@code day} column that is not strictly increasing
      */
     public static Map<String, double[]> loadCsv(Path path) {
         List<String> lines;
@@ -28,43 +43,73 @@ public final class DataIo {
         } catch (IOException e) {
             throw new IllegalArgumentException("no such data file: " + path, e);
         }
+        // drop leading/trailing blank lines only (mirrors Python's strip());
+        // an interior blank line is a ragged row, as in the other ports
         while (!lines.isEmpty() && lines.get(lines.size() - 1).isBlank()) {
             lines.remove(lines.size() - 1);
+        }
+        while (!lines.isEmpty() && lines.get(0).isBlank()) {
+            lines.remove(0);
         }
         if (lines.size() < 2) {
             throw new IllegalArgumentException("empty data file: " + path);
         }
-        String[] header = lines.get(0).split(",");
+        String[] header = lines.get(0).split(",", -1);
         int ncol = header.length;
+        for (int j = 0; j < ncol; j++) {
+            header[j] = header[j].trim();
+            for (int k = 0; k < j; k++) {
+                if (header[k].equals(header[j])) {
+                    throw new IllegalArgumentException("duplicate column names in " + path);
+                }
+            }
+        }
         int nrow = lines.size() - 1;
         double[][] data = new double[ncol][nrow];
         for (int i = 0; i < nrow; i++) {
-            String[] parts = lines.get(i + 1).split(",");
+            String[] parts = lines.get(i + 1).split(",", -1);
             if (parts.length != ncol) {
                 throw new IllegalArgumentException("ragged row " + (i + 2) + " in " + path);
             }
             for (int j = 0; j < ncol; j++) {
+                double v;
                 try {
-                    data[j][i] = Double.parseDouble(parts[j].trim());
+                    v = Double.parseDouble(parts[j].trim());
                 } catch (NumberFormatException e) {
                     throw new IllegalArgumentException(
                             "non-numeric value at row " + (i + 2) + " in " + path, e);
                 }
+                if (!Double.isFinite(v)) {
+                    throw new IllegalArgumentException(
+                            "non-finite value at row " + (i + 2) + " in " + path);
+                }
+                data[j][i] = v;
             }
         }
         Map<String, double[]> out = new LinkedHashMap<>();
         for (int j = 0; j < ncol; j++) {
-            out.put(header[j].trim(), data[j]);
+            out.put(header[j], data[j]);
+        }
+        double[] day = out.get(DAY_COLUMN);
+        if (day != null) {
+            for (int i = 1; i < day.length; i++) {
+                if (!(day[i] > day[i - 1])) {
+                    throw new IllegalArgumentException(
+                            "day column must be strictly increasing (sorted, no duplicates) in "
+                                    + path);
+                }
+            }
         }
         return out;
     }
 
     /**
-     * Load the bundled {@code config.json} — a flat JSON object of numeric
-     * scalars — into {key -&gt; double}.
+     * Load the bundled {@code config.json} — a flat JSON object of finite
+     * numeric scalars — into {key -&gt; double}.
      *
      * @throws IllegalArgumentException on a missing file or malformed /
-     *     non-flat / non-numeric content
+     *     non-flat / non-numeric / non-finite content (booleans, strings and
+     *     NaN/Infinity literals are rejected)
      */
     public static Map<String, Double> loadConfig(Path path) {
         String text;
@@ -160,11 +205,18 @@ public final class DataIo {
                     "config JSON in " + path + " must hold numeric scalars (offset "
                             + start + ")");
         }
+        double v;
         try {
-            return Double.parseDouble(s.substring(start, pos[0]));
+            v = Double.parseDouble(s.substring(start, pos[0]));
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(
                     "bad number in config JSON " + path + " at offset " + start, e);
         }
+        if (!Double.isFinite(v)) {
+            throw new IllegalArgumentException(
+                    "config JSON in " + path + " must hold finite numeric scalars (offset "
+                            + start + ")");
+        }
+        return v;
     }
 }

@@ -54,15 +54,10 @@ OLSResult ols(const std::vector<double>& y, const Matrix& x, bool intercept) {
 
     double tss;
     if (intercept) {
-        long double sum = 0.0L;
-        for (double v : y) sum += v;
-        const double mean = static_cast<double>(sum / static_cast<long double>(n));
-        long double acc = 0.0L;
-        for (double v : y) {
-            const long double d = static_cast<long double>(v) - mean;
-            acc += d * d;
-        }
-        tss = static_cast<double>(acc);
+        const double mean = compensated_sum(y) / static_cast<double>(n);
+        NeumaierSum acc;
+        for (double v : y) acc.add((v - mean) * (v - mean));
+        tss = acc.value();
     } else {
         tss = dot(y, y);
     }

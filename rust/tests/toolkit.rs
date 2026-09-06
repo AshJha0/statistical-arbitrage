@@ -135,7 +135,7 @@ fn adf_pvalue_monotone_in_tstat() {
     let mut last = 0.0;
     for i in 0..80 {
         let t = -6.0 + 0.1 * i as f64;
-        let p = interpolate_pvalue(t, 2).unwrap();
+        let p = interpolate_pvalue(t, 2, Some(898)).unwrap();
         assert!(p >= last, "p-value must be non-decreasing at t={t}");
         assert!((1.0e-4..=0.9999).contains(&p));
         last = p;
@@ -150,6 +150,19 @@ fn adf_reject_validates_alpha() {
         res.reject(0.025),
         Err(StatarbError::InvalidParam(_))
     ));
+}
+
+#[test]
+fn adf_bundled_random_walk_uses_finite_sample_table() {
+    // MacKinnon (2010) 5% value at T_eff = 1498, hand-evaluated
+    let (wa, _) = walks();
+    let res = adf_test(&wa, 1, 1).unwrap();
+    assert_eq!(res.nobs, 1498);
+    let t = 1498.0_f64;
+    let e5 = -2.86154 - 2.8903 / t - 4.234 / (t * t) - 40.040 / (t * t * t);
+    assert!((res.crit[1] - e5).abs() < 1e-12);
+    assert!(res.crit[1] < -2.86154);
+    assert_eq!(res.crit, statarb::critical_values(1, Some(1498)).unwrap());
 }
 
 #[test]
@@ -259,6 +272,37 @@ fn johansen_fx_triangle_rank() {
 }
 
 #[test]
+fn johansen_collinear_levels_rejected() {
+    // proposed test 11: exactly collinear level columns are refused
+    let (y, x) = pair();
+    let two: Vec<Vec<f64>> = (0..200).map(|t| vec![y[t], 2.0 * y[t] + 1.0]).collect();
+    let three: Vec<Vec<f64>> = (0..200).map(|t| vec![y[t], x[t], y[t] + x[t]]).collect();
+    for lv in [&two, &three] {
+        match johansen_trace(lv, 1) {
+            Err(StatarbError::Singular(m)) => assert!(m.contains("singular"), "{m}"),
+            other => panic!("expected Singular, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn linalg_helpers_reject_nonfinite() {
+    let nan_m = vec![vec![1.0, f64::NAN], vec![f64::NAN, 1.0]];
+    assert!(matches!(
+        statarb::jacobi_eigh(&nan_m),
+        Err(StatarbError::NonFinite(_))
+    ));
+    assert!(matches!(
+        statarb::cholesky_lower(&nan_m),
+        Err(StatarbError::NonFinite(_))
+    ));
+    assert!(matches!(
+        statarb::cholesky_lower(&[vec![1.0, 2.0, 3.0]]),
+        Err(StatarbError::InvalidParam(_))
+    ));
+}
+
+#[test]
 fn johansen_error_paths() {
     let (y, x) = pair();
     let two: Vec<Vec<f64>> = (0..100).map(|t| vec![y[t], x[t]]).collect();
@@ -319,6 +363,28 @@ fn kalman_joseph_covariance_stays_psd() {
     let rad = (mid * mid - det).max(0.0).sqrt();
     assert!(mid - rad >= -1e-12, "smallest eigenvalue must be >= 0");
     assert!(km.s_var.iter().all(|&v| v > 0.0));
+}
+
+#[test]
+fn kalman_rejects_nonfinite_params() {
+    // proposed test 4 (MAJ-3): r in {NaN, +inf}, delta NaN/inf -> error
+    // (previously r = NaN produced an all-NaN beta path silently)
+    let (y, x) = pair();
+    let (y, x) = (&y[..50], &x[..50]);
+    for r in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1e-3] {
+        assert!(matches!(
+            kalman_hedge(y, x, 1e-4, r),
+            Err(StatarbError::InvalidParam(_))
+        ));
+    }
+    for d in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(matches!(
+            kalman_hedge(y, x, d, 1e-3),
+            Err(StatarbError::InvalidParam(_))
+        ));
+    }
+    let km = kalman_hedge(y, x, 1e-4, 1e-3).unwrap();
+    assert!(km.beta.iter().chain(km.z.iter()).all(|v| v.is_finite()));
 }
 
 #[test]

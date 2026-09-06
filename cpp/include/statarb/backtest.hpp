@@ -26,7 +26,9 @@
 ///  - Costs are charged on traded notional at each execution close.
 ///  - A position still open at the final day is force-closed at the final
 ///    close (a normal closed trade); a pending entry at the end of data
-///    is discarded.
+///    is DISCARDED (never executed-and-force-closed at the same close).
+///  - Metrics: ann_return = (1+total)^(252/N) - 1, pinned to -1.0 when the
+///    equity curve ends at or below zero (total_return <= -1).
 #pragma once
 
 #include <cstddef>
@@ -34,8 +36,12 @@
 
 namespace statarb {
 
+/// Nudge added before flooring T * insample_frac in walk_forward.  Pinned.
+inline constexpr double kSplitEps = 1.0e-9;
+
 /// Signal / cost parameters for the pairs backtest (validated on
-/// construction).
+/// construction AND re-validated by backtest_pair / walk_forward, so
+/// mutating the public members afterwards cannot bypass the checks).
 struct BacktestConfig {
     int window;           ///< Rolling z-score window W (>= 2).
     double entry_z;       ///< Enter when |z| >= entry_z (and < stop_z).
@@ -46,13 +52,18 @@ struct BacktestConfig {
     double capital;       ///< Gross capital; each leg is capital/2 at entry.
 
     /// Construct and validate.
-    /// \throws std::invalid_argument when window < 2, the ordering
-    ///         0 <= exit_z < entry_z < stop_z is violated, costs are
-    ///         negative, or capital is not positive and finite.
+    /// \throws std::invalid_argument when window < 2, any threshold or cost
+    ///         is NaN/inf, the ordering 0 <= exit_z < entry_z < stop_z is
+    ///         violated, costs are negative, or capital is not positive
+    ///         and finite.
     explicit BacktestConfig(int window_ = 60, double entry_z_ = 2.0,
                             double exit_z_ = 0.5, double stop_z_ = 4.0,
                             double cost_bps_ = 1.0, double slippage_bps_ = 0.5,
                             double capital_ = 1.0e6);
+
+    /// Re-check the pinned parameter domain (the constructor's checks).
+    /// \throws std::invalid_argument on any violation.
+    void validate() const;
 };
 
 /// One closed round trip (days are execution-day indices).
@@ -93,6 +104,8 @@ struct BacktestResult {
 
 /// Compute the pinned metric set from an equity curve and trade list
 /// (turnover is filled in by backtest_pair, not here).
+/// \throws std::invalid_argument on an empty or non-finite equity curve
+///         or a non-positive / non-finite capital.
 Metrics compute_metrics(const std::vector<double>& equity, double capital,
                         const std::vector<Trade>& trades);
 
@@ -102,9 +115,9 @@ Metrics compute_metrics(const std::vector<double>& equity, double capital,
 /// \param alpha,beta Hedge parameters defining the spread (estimated
 ///        elsewhere — e.g. in-sample OLS or Engle-Granger).
 /// \param config Validated signal/cost parameters.
-/// \throws std::invalid_argument on length mismatch, non-finite or
-///         non-positive prices, or window larger than the series (via
-///         rolling_zscore).
+/// \throws std::invalid_argument on an invalid config (re-validated),
+///         length mismatch, non-finite or non-positive prices, or window
+///         larger than the series (via rolling_zscore).
 BacktestResult backtest_pair(const std::vector<double>& y,
                              const std::vector<double>& x,
                              double alpha, double beta,
@@ -124,8 +137,12 @@ struct WalkForwardResult {
 /// out-of-sample with the SAME (alpha, beta).  The OOS z-score warms up
 /// inside the OOS segment only — no information crosses the split.
 ///
-/// \throws std::invalid_argument when insample_frac lies outside (0, 1)
-///         or either segment is shorter than the z-score window.
+/// `split = floor(T * insample_frac + kSplitEps)` (pinned): the nudge
+/// removes binary-float artefacts such as 700 * 0.7 == 489.99999999999994.
+///
+/// \throws std::invalid_argument when insample_frac lies outside (0, 1),
+///         the series differ in length, the config is invalid, or either
+///         segment is shorter than the z-score window.
 WalkForwardResult walk_forward(const std::vector<double>& y,
                                const std::vector<double>& x,
                                const BacktestConfig& config,

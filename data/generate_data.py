@@ -19,6 +19,7 @@ Run:  python3 generate_data.py   (from this directory)
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from statarb import (  # noqa: E402
     BacktestConfig,
     adf_test,
     backtest_pair,
+    critical_values,
     engle_granger,
     half_life,
     johansen_trace,
@@ -135,13 +137,15 @@ CONFIG = {
 }
 
 
-def cross_validate(pair: dict, walks: dict) -> None:
+def cross_validate(pair: dict, walks: dict, fx: dict) -> None:
     """Assert our OLS/ADF agree with statsmodels before golden is written."""
     import statsmodels.api as sm
+    from statsmodels.tsa.adfvalues import mackinnoncrit
     from statsmodels.tsa.stattools import adfuller
+    from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
     y, x = pair["stock_y"], pair["stock_x"]
-    n_is = int(len(y) * CONFIG["insample_frac"])
+    n_is = int(math.floor(len(y) * CONFIG["insample_frac"] + 1e-9))
 
     ours = ols(y, x, intercept=True)
     sm_fit = sm.OLS(y, sm.add_constant(x)).fit()
@@ -155,18 +159,47 @@ def cross_validate(pair: dict, walks: dict) -> None:
     assert abs(ours_adf.tstat - sm_t) < 1e-8, f"ADF resid {ours_adf.tstat} vs {sm_t}"
 
     ours_rw = adf_test(walks["walk_a"], maxlag=1, nvars=1)
-    sm_rw = adfuller(walks["walk_a"], maxlag=1, regression="c", autolag=None)[0]
-    assert abs(ours_rw.tstat - sm_rw) < 1e-8, "ADF random walk"
-    print("statsmodels cross-validation: OK")
+    sm_rw = adfuller(walks["walk_a"], maxlag=1, regression="c", autolag=None)
+    assert abs(ours_rw.tstat - sm_rw[0]) < 1e-8, "ADF random walk"
+    # finite-sample MacKinnon (2010) critical values at the regression nobs
+    for key in ("1%", "5%", "10%"):
+        assert abs(ours_rw.crit[key] - sm_rw[4][key]) < 1e-10, f"ADF cv {key}"
+    for T in (20, 50, 898, 1498):
+        for n in (1, 2, 3):
+            assert np.allclose(critical_values(n, T), mackinnoncrit(n, "c", T),
+                               atol=1e-12), f"cv N={n} T={T}"
+
+    # Johansen: pinned Cholesky + Jacobi route vs an independent numpy
+    # generalised-eigen solution and statsmodels' coint_johansen.
+    for Y in (np.column_stack([y[:n_is], x[:n_is]]),
+              np.column_stack([np.log(fx["eurusd"]), np.log(fx["gbpusd"]),
+                               np.log(fx["eurgbp"])])):
+        T, n = Y.shape
+        dY = np.diff(Y, axis=0)
+        Z0, Z1 = dY[1:], Y[1 : T - 1]
+        ZD = np.column_stack([np.ones(T - 2), dY[:-1]])
+        proj = ZD @ np.linalg.lstsq(ZD, np.column_stack([Z0, Z1]), rcond=None)[0]
+        R = np.column_stack([Z0, Z1]) - proj
+        R0, R1 = R[:, :n], R[:, n:]
+        t_eff = T - 2
+        S00, S01, S11 = R0.T @ R0 / t_eff, R0.T @ R1 / t_eff, R1.T @ R1 / t_eff
+        M = S01.T @ np.linalg.solve(S00, S01)
+        lam_ref = np.sort(np.real(np.linalg.eigvals(np.linalg.solve(S11, M))))[::-1]
+        ours_jo = johansen_trace(Y)
+        assert np.allclose(ours_jo.eigenvalues, lam_ref, atol=1e-8), "Johansen eig"
+        sm_jo = coint_johansen(Y, det_order=0, k_ar_diff=1)
+        assert np.allclose(ours_jo.trace_stats, sm_jo.lr1, atol=1e-6), "Johansen trace"
+    print("statsmodels / numpy cross-validation: OK")
 
 
 def build_golden() -> dict:
     pair = load_csv(HERE / "pair_equity.csv")
     walks = load_csv(HERE / "random_walks.csv")
-    cross_validate(pair, walks)
+    fx = load_csv(HERE / "fx_triangle.csv")
+    cross_validate(pair, walks, fx)
 
     y, x = pair["stock_y"], pair["stock_x"]
-    n_is = int(len(y) * CONFIG["insample_frac"])
+    n_is = int(math.floor(len(y) * CONFIG["insample_frac"] + 1e-9))
     cases: list[dict] = []
 
     def case(name: str, inputs: dict, expect: dict, tol: float) -> None:
@@ -182,6 +215,7 @@ def build_golden() -> dict:
 
     eg = engle_granger(y[:n_is], x[:n_is], maxlag=CONFIG["adf_maxlag"])
     case("adf_resid_insample_tstat", ins_in, {"value": eg.adf.tstat}, 1e-8)
+    case("adf_resid_insample_crit5", ins_in, {"value": eg.adf.crit["5%"]}, 1e-10)
     case("eg_pair_insample_coint", ins_in,
          {"value": 1.0 if eg.cointegrated(0.05) else 0.0}, 1e-9)
 
@@ -190,6 +224,10 @@ def build_golden() -> dict:
     case("adf_random_walk_tstat", rw_in, {"value": rw.tstat}, 1e-8)
     case("adf_random_walk_reject", rw_in,
          {"value": 1.0 if rw.reject(0.05) else 0.0}, 1e-9)
+    # MacKinnon (2010) finite-sample 5% critical value at T_eff = 1498 and
+    # the interpolated p-value through the finite-sample knots.
+    case("adf_random_walk_crit5", rw_in, {"value": rw.crit["5%"]}, 1e-10)
+    case("adf_random_walk_pvalue", rw_in, {"value": rw.pvalue}, 1e-10)
 
     eg_sp = engle_granger(walks["walk_a"], walks["walk_b"],
                           maxlag=CONFIG["adf_maxlag"])

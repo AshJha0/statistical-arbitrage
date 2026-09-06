@@ -15,7 +15,7 @@ import java.util.Map;
  *   <li>Spurious-regression teaching case (independent random walks).</li>
  * </ol>
  *
- * <p>Run: {@code ./demo.sh} from the java/ directory (after {@code ./build.sh}).
+ * <p>Run: {@code bash demo.sh} from the java/ directory (after {@code bash build.sh}).
  */
 public final class Demo {
 
@@ -54,7 +54,7 @@ public final class Demo {
         Map<String, double[]> walks = DataIo.loadCsv(data.resolve("random_walks.csv"));
         double[] y = pair.get("stock_y");
         double[] x = pair.get("stock_x");
-        int nIs = (int) (y.length * cfg.get("insample_frac"));
+        int nIs = (int) Math.floor(y.length * cfg.get("insample_frac") + Backtest.SPLIT_EPS);
         int maxlag = cfg.get("adf_maxlag").intValue();
         Backtest.Config btCfg = new Backtest.Config(
                 cfg.get("window").intValue(), cfg.get("entry_z"), cfg.get("exit_z"),

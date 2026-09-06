@@ -36,7 +36,8 @@ add_executable(statarb_tests
   tests/test_signals.cpp
   tests/test_johansen.cpp
   tests/test_kalman.cpp
-  tests/test_backtest.cpp)
+  tests/test_backtest.cpp
+  tests/test_data_io.cpp)
 target_include_directories(statarb_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(statarb_tests PRIVATE statarb GTest::gtest GTest::gtest_main)
 

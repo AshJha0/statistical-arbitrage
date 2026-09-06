@@ -164,4 +164,32 @@ public class JohansenTest {
         assertThrows(IllegalArgumentException.class,
                 () -> Johansen.traceTest(columnStack(y, bad)));
     }
+
+    @Test
+    public void collinearLevelsRejected() {
+        // proposed test 11: exactly collinear level columns are refused with a
+        // "singular" error rather than producing garbage eigenvalues
+        double[] y = TestData.slice(TestData.pair().get("stock_y"), 0, 200);
+        double[] x = TestData.slice(TestData.pair().get("stock_x"), 0, 200);
+        double[] y2 = new double[200];
+        double[] yx = new double[200];
+        for (int t = 0; t < 200; t++) {
+            y2[t] = 2.0 * y[t] + 1.0;
+            yx[t] = y[t] + x[t];
+        }
+        for (double[][] lv : new double[][][] {columnStack(y, y2), columnStack(y, x, yx)}) {
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                    () -> Johansen.traceTest(lv));
+            assertTrue(e.getMessage(), e.getMessage().contains("singular"));
+        }
+    }
+
+    @Test
+    public void linalgHelpersRejectNonFinite() {
+        double[][] nanM = {{1.0, Double.NaN}, {Double.NaN, 1.0}};
+        assertThrows(IllegalArgumentException.class, () -> LinAlg.jacobiEigh(nanM));
+        assertThrows(IllegalArgumentException.class, () -> LinAlg.choleskyLower(nanM));
+        assertThrows(IllegalArgumentException.class,
+                () -> LinAlg.choleskyLower(new double[][] {{1.0, 2.0, 3.0}}));
+    }
 }

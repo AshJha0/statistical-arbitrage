@@ -24,6 +24,9 @@ namespace {
 
 const std::string kDataDir = "../data";
 
+/// Exact number of golden cases (kept in step with generate_data.py).
+constexpr std::size_t kGoldenCount = 24;
+
 struct SharedData {
     std::map<std::string, double> cfg;
     std::vector<double> y, x;              // pair_equity columns
@@ -64,12 +67,14 @@ double compute_case(const std::string& name, const mini_json::Value& inputs) {
         if (name == "ols_pair_beta") return fit.params[1];
         if (name == "ols_pair_r2") return fit.r2;
     }
-    if (name == "adf_random_walk_tstat" || name == "adf_random_walk_reject") {
+    if (name.rfind("adf_random_walk", 0) == 0) {
         const std::vector<double>& col =
             inputs.at("column").str == "walk_a" ? d.walk_a : d.walk_b;
         const statarb::ADFResult res = statarb::adf_test(col, maxlag, 1);
-        return name == "adf_random_walk_tstat" ? res.tstat
-                                               : (res.reject(0.05) ? 1.0 : 0.0);
+        if (name == "adf_random_walk_tstat") return res.tstat;
+        if (name == "adf_random_walk_reject") return res.reject(0.05) ? 1.0 : 0.0;
+        if (name == "adf_random_walk_crit5") return res.crit.cv5;
+        if (name == "adf_random_walk_pvalue") return res.pvalue;
     }
     if (name == "eg_spurious_coint") {
         const statarb::EGResult eg =
@@ -77,6 +82,7 @@ double compute_case(const std::string& name, const mini_json::Value& inputs) {
         return eg.cointegrated(0.05) ? 1.0 : 0.0;
     }
     if (name == "adf_resid_insample_tstat") return d.eg_insample.adf.tstat;
+    if (name == "adf_resid_insample_crit5") return d.eg_insample.adf.crit.cv5;
     if (name == "eg_pair_insample_coint") {
         return d.eg_insample.cointegrated(0.05) ? 1.0 : 0.0;
     }
@@ -124,7 +130,7 @@ TEST(Golden, AllCasesWithinTolerance) {
     const mini_json::Value doc =
         mini_json::parse_file(kDataDir + "/golden/golden.json");
     const mini_json::Value& cases = doc.at("cases");
-    ASSERT_GE(cases.arr.size(), 18u);
+    ASSERT_EQ(cases.arr.size(), kGoldenCount);
     for (const mini_json::Value& c : cases.arr) {
         const std::string name = c.at("name").str;
         SCOPED_TRACE("golden case: " + name);
