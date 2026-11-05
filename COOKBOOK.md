@@ -23,7 +23,11 @@ All numbers quoted in comments are the golden values for the bundled data,
 or, where a comment says "demo", the Python demo's output. The data is
 synthetic: these recipes show how to call the code, not that a strategy
 works. Recipes 13–15 (streaming, lag selection, research helpers) are
-Python-only except where stated.
+Python-only except where stated. Recipes 17–20 use the paper-trading layer
+(`statarb.trading`): Python only, paper only, no live broker. Their code was run
+from `python/` and the output shown is the real output. Recipes 21–23 (benchmarks,
+reproducing the studies, a preregistration template) give commands and a template;
+see each for what was not re-run.
 
 ---
 
@@ -828,7 +832,532 @@ real.
 
 ## 16. How do I run a real-data study honestly?
 
-Commit a preregistration first, with the data, rules, dates and pass gates. Run the development period for bugs only, then the holdout once, and report a failure as a null. Worked examples: [`research/real_data_2026_11`](research/real_data_2026_11) and [`research/sector_residual_2026_11`](research/sector_residual_2026_11). Both were null.
+Commit a preregistration first (recipe 23 has a template), with the data, rules, dates and pass gates. Run the development period for bugs only, then the holdout once, and report a failure as a null. Worked examples: [`research/real_data_2026_11`](research/real_data_2026_11) and [`research/sector_residual_2026_11`](research/sector_residual_2026_11). Both were null.
+
+## 17. How do I run a paper trade end to end and read the audit trail? (Python only)
+
+**Paper trading only.** `statarb.trading` simulates fills. It has no network
+code, no credentials and no live-order path. ADV (average daily volume) is an
+assumption because the CSV has no volume, and every cost below is assumed. The
+prices are synthetic.
+
+```python
+import json
+import tempfile
+from collections import Counter
+from pathlib import Path
+
+from statarb import load_config, load_csv, walk_forward
+from statarb.backtest import config_from_dict
+from statarb.trading import (ExecutionConfig, PaperBrokerConfig, PaperRunConfig,
+                             RiskLimits, run_paper)
+
+data = load_csv("../data/pair_equity.csv")
+y, x = data["stock_y"], data["stock_x"]
+rule = config_from_dict(load_config("../data/config.json"))
+wf = walk_forward(y, x, rule)                     # hedge fitted on the first 60%
+capital = rule.capital
+
+run = PaperRunConfig(adv_y=100_000.0, adv_x=100_000.0, seed=42)   # ADV is assumed
+broker = PaperBrokerConfig(initial_cash=capital, half_spread_bps=1.0, spread_jitter=0.3,
+                           impact_bps=30.0, max_participation=0.02, liquidity_jitter=0.3,
+                           commission_bps=0.5, borrow_bps_annual=50.0,
+                           leg_latency_bars={"stock_x": 1})
+limits = RiskLimits(max_gross=1.3 * capital, max_net=0.6 * capital,
+                    max_name_notional=0.9 * capital, max_order_adv_frac=0.05,
+                    price_band_frac=0.15, max_drawdown_frac=0.10,
+                    locates=frozenset({"stock_y", "stock_x"}))
+execution = ExecutionConfig(max_imbalance_frac=0.5, timeout_bars=8)
+
+with tempfile.TemporaryDirectory() as folder:
+    path = Path(folder) / "audit.jsonl"
+    res = run_paper(y[wf.split:], x[wf.split:], wf.alpha, wf.beta, rule, run, broker, limits,
+                    execution, str(path))
+    lines = [json.loads(s) for s in path.read_text(encoding="utf-8").splitlines()]
+
+a = res.attribution
+print(f"net P&L {res.equity[-1] - capital:,.0f} = at mid {a.spread:,.0f} - costs {a.costs:,.0f} - borrow {a.borrow:,.0f}")
+print("entries", res.entries, "outcomes", res.outcomes, "fills", res.fills)
+print("rejections", res.rejections or "none", "| kill switch", res.kill_reason or "not tripped",
+      "| breaks", len(res.breaks))
+print("audit records", len(lines), dict(Counter(r["event"] for r in lines)))
+
+first = next(r["seq"] for r in lines if r["event"] == "signal" and r["action"] == "enter")
+print("\nFirst entry, in audit order:")
+for r in lines[first:first + 9]:
+    keep = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()
+            if k in ("seq", "bar", "event", "action", "z", "symbol", "side", "qty", "price",
+                     "approved", "reasons", "reducing", "client_id")}
+    print(" ", json.dumps(keep, sort_keys=True))
+```
+
+Output (a real run; the audit file is in a temporary folder and deleted):
+
+```text
+net P&L 3,953 = at mid 12,841 - costs 7,383 - borrow 1,505
+entries 8 outcomes {'FILLED': 7, 'FLAT': 8, 'UNWOUND': 0} fills 119
+rejections none | kill switch not tripped | breaks 0
+audit records 227 {'signal': 16, 'risk_decision': 92, 'fill': 119}
+
+First entry, in audit order:
+  {"action": "enter", "bar": 106, "event": "signal", "seq": 0, "z": 2.2011}
+  {"approved": true, "bar": 106, "client_id": "pair-00000001", "event": "risk_decision", "qty": 1549, "reasons": [], "reducing": false, "seq": 1, "side": "SELL", "symbol": "stock_y"}
+  {"approved": true, "bar": 106, "client_id": "pair-00000002", "event": "risk_decision", "qty": 2539, "reasons": [], "reducing": false, "seq": 2, "side": "BUY", "symbol": "stock_x"}
+  {"bar": 107, "client_id": "pair-00000001", "event": "fill", "price": 171.2854, "qty": 1549, "seq": 3, "side": "SELL", "symbol": "stock_y"}
+  {"bar": 108, "client_id": "pair-00000002", "event": "fill", "price": 92.4641, "qty": 1925, "seq": 4, "side": "BUY", "symbol": "stock_x"}
+  {"approved": true, "bar": 108, "client_id": "pair-00000003", "event": "risk_decision", "qty": 1925, "reasons": [], "reducing": false, "seq": 5, "side": "BUY", "symbol": "stock_x"}
+  {"approved": true, "bar": 108, "client_id": "pair-00000004", "event": "risk_decision", "qty": 1174, "reasons": [], "reducing": false, "seq": 6, "side": "SELL", "symbol": "stock_y"}
+  {"bar": 109, "client_id": "pair-00000002", "event": "fill", "price": 92.8183, "qty": 614, "seq": 7, "side": "BUY", "symbol": "stock_x"}
+  {"bar": 109, "client_id": "pair-00000004", "event": "fill", "price": 172.9098, "qty": 1174, "seq": 8, "side": "SELL", "symbol": "stock_y"}
+```
+
+How to read it:
+
+- **Attribution.** `net P&L = at mid - costs - borrow`: 12,841 - 7,383 - 1,505
+  = 3,953. "At mid" values the trades at mid prices; the rest is what the
+  simulated market charged. `python demo_paper.py` splits the costs into
+  half-spread (1,471), impact (5,171) and commission (742).
+- **Do not read the sign as an edge.** The same data, frictionless, loses
+  45,526 and the backtest loses 49,084. Delaying both legs by two bars with no
+  costs gives -16,782 and by four +19,743, so this P&L is very sensitive to
+  entry timing. It is one synthetic path with about 9 trades.
+- **Audit order is causal order.** `seq` 0 is the signal at bar 106 (z = 2.20,
+  short the spread). `seq` 1 and 2 are the risk decisions for the two child
+  orders, both approved (`reducing` false: they add risk). `seq` 3 is the fill of
+  the y leg at bar 107; `seq` 4 is the x leg at bar 108, which fills 1,925 of
+  its 2,539 shares (it has one bar of latency and a participation cap). Then the
+  executor, seeing the legs at different progress, sends a second pair of
+  children (`seq` 5 and 6, sized 1,925 and 1,174) and fills continue. Section
+  10a.2 of LEARN.md works through those sizes.
+- **Event kinds.** `signal`, `risk_decision`, `fill`, `flatten` (a stop, the
+  kill switch or the end-of-data wind-down), `reconciliation_break`,
+  `kill_switch_tripped` and `kill_switch_reset`. The file is append-only
+  JSONL, keyed by bar number rather than wall-clock time, so a seeded run
+  replays byte for byte. `run_paper(..., audit_path=None)` keeps records in
+  memory only.
+- **Checks to run on every result.** `res.rejections`, `res.kill_reason`,
+  `res.breaks`, `res.outcomes['UNWOUND']` and `res.final_positions`. Here: no
+  rejections, no kill switch, no breaks, nothing unwound, nothing left open.
+
+---
+
+## 18. How do I add a risk limit and test it? (Python only)
+
+The checks live in `RiskEngine.check`. The least invasive way to add one is a
+subclass that calls the base check first, then applies the extra limit to
+orders that increase risk. Keep the rule that **reducing orders always pass**:
+a limit that blocks the order that cuts exposure makes the breach worse.
+
+```python
+from dataclasses import replace
+from enum import Enum
+
+from statarb.trading import Order, Quote, RiskEngine, RiskLimits, Side
+
+
+class ExtraReason(Enum):
+    MAX_SHARES_NAME = "MAX_SHARES_NAME"
+
+
+class SharesCapEngine(RiskEngine):
+    """RiskEngine plus one limit: at most `max_shares` (long or short) in any one name."""
+
+    def __init__(self, limits, max_shares, sink=None):
+        super().__init__(limits, sink)
+        self.max_shares = max_shares
+
+    def check(self, order, positions, open_orders, quotes, bar):
+        decision = super().check(order, positions, open_orders, quotes, bar)
+        if decision.reducing:                      # the rule that lets risk come off
+            return decision
+        # worst case on the order's side, as in the base class
+        held = positions.get(order.symbol, 0)
+        working = sum(o.remaining for o in open_orders
+                      if o.symbol == order.symbol and o.side is order.side)
+        after = abs(held + int(order.side) * (working + order.qty))
+        if after <= self.max_shares:
+            return decision
+        reasons = decision.reasons + (ExtraReason.MAX_SHARES_NAME,)
+        self._record({"event": "risk_decision", "bar": bar, "client_id": order.client_id,
+                      "symbol": order.symbol, "approved": False,
+                      "reasons": [r.value for r in reasons], "note": "extra limit"})
+        return replace(decision, approved=False, reasons=reasons)
+
+
+limits = RiskLimits(max_gross=2e6, max_net=1e6, max_name_notional=1e6,
+                    locates=frozenset({"A"}))
+engine = SharesCapEngine(limits, max_shares=1_000)
+quotes = {"A": Quote(mid=100.0, adv=1e6, prev_close=100.0)}
+
+def test(side, qty, held, expect_ok):
+    order = Order("t1", "A", side, qty)
+    d = engine.check(order, {"A": held} if held else {}, [], quotes, bar=0)
+    print(f"{side.name:4} {qty:5} held {held:5} -> approved={d.approved} "
+          f"reducing={d.reducing} reasons={[r.value for r in d.reasons]}")
+    assert d.approved is expect_ok
+
+test(Side.BUY, 900, 0, True)            # inside the cap
+test(Side.BUY, 1_100, 0, False)         # over the cap
+test(Side.BUY, 200, 900, False)         # 900 held + 200 = 1,100
+test(Side.SELL, 1_500, 1_200, True)     # crosses to -300: not reducing, but inside the cap
+test(Side.SELL, 2_000, 900, False)      # crosses to -1,100: not reducing, over the cap
+test(Side.SELL, 500, 1_500, True)       # already over the cap (price drift, a fill): reducing, passes
+
+engine.trip(bar=1, reason="MANUAL")     # kill switch: new risk is refused, reducing is not
+test(Side.BUY, 10, 0, False)
+test(Side.SELL, 500, 1_500, True)
+print("all checks passed;", len(engine.log), "decisions logged")
+```
+
+```text
+BUY    900 held     0 -> approved=True reducing=False reasons=[]
+BUY   1100 held     0 -> approved=False reducing=False reasons=['MAX_SHARES_NAME']
+BUY    200 held   900 -> approved=False reducing=False reasons=['MAX_SHARES_NAME']
+SELL  1500 held  1200 -> approved=True reducing=False reasons=[]
+SELL  2000 held   900 -> approved=False reducing=False reasons=['MAX_SHARES_NAME']
+SELL   500 held  1500 -> approved=True reducing=True reasons=[]
+BUY     10 held     0 -> approved=False reducing=False reasons=['KILL_SWITCH']
+SELL   500 held  1500 -> approved=True reducing=True reasons=[]
+all checks passed; 12 decisions logged
+```
+
+What the cases pin down: inside the cap passes; over the cap is refused with the
+reason recorded in the log; a sell that crosses zero is checked as new risk (the
+sell of 2,000 against 900 held lands at -1,100 and is refused); an order that only moves a
+position back toward zero passes even when the position is already over the cap
+(1,500 shares against a cap of 1,000); and under the kill switch new risk is
+refused (`KILL_SWITCH`) while a reducing sell still goes through. The logged
+decision count includes the extra refusals the subclass appended. For a permanent
+limit, add the field to `RiskLimits` and a member to `RiskReason` in
+`statarb/trading/risk.py`, and put the cases above into
+`python/tests/test_trading_risk_execution.py`.
+
+Remember what limits can and cannot do: they are checked at decision prices, so a
+later price move can take exposure past a limit with no trade.
+
+---
+
+## 19. How do I write a `Broker` adapter against the interface? (Python only, paper only)
+
+`Broker` is a `typing.Protocol` with seven methods: `submit`, `cancel`, `order`,
+`open_orders`, `positions`, `cash` and `fills`. Anything with those methods can
+drive `PairExecutor`. A live adapter would translate each call to a venue API;
+that is an owner decision and nothing in this repository does it. The example
+below forwards to `PaperBroker` and counts calls, so it can be run and tested
+with no connection of any kind.
+
+```python
+from collections import Counter
+
+from statarb.trading import (Broker, ExecutionConfig, Order, PairExecutor, PaperBroker,
+                             PaperBrokerConfig, Quote, RiskEngine, RiskLimits, Side)
+
+
+class RecordingBroker:
+    """An adapter: same seven methods as `Broker`, here forwarding to PaperBroker.
+
+    A real adapter would translate each call to a venue API instead. This one is
+    paper only and opens no connection. `on_bar` is the simulator's clock, not part
+    of `Broker`; a live adapter would receive fills from the venue instead.
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.calls = Counter()
+
+    def submit(self, order):
+        self.calls["submit"] += 1
+        return self.inner.submit(order)
+
+    def cancel(self, client_id):
+        self.calls["cancel"] += 1
+        return self.inner.cancel(client_id)
+
+    def order(self, client_id):
+        return self.inner.order(client_id)
+
+    def open_orders(self):
+        return self.inner.open_orders()
+
+    def positions(self):
+        return self.inner.positions()
+
+    def cash(self):
+        return self.inner.cash()
+
+    def fills(self):
+        return self.inner.fills()
+
+    def on_bar(self, bar, quotes):
+        return self.inner.on_bar(bar, quotes)
+
+
+broker = RecordingBroker(PaperBroker(PaperBrokerConfig(max_participation=0.05), seed=1))
+print("implements Broker:", isinstance(broker, Broker))        # structural check only
+
+# Contract checks a new adapter should pass before anything drives it.
+a = Order("c-1", "A", Side.BUY, 100)
+first = broker.submit(a)
+again = broker.submit(Order("c-1", "A", Side.BUY, 100))        # same id, same order: no-op
+assert (first.client_id, again.status, len(broker.open_orders())) == ("c-1", first.status, 1)
+try:
+    broker.submit(Order("c-1", "A", Side.BUY, 999))            # same id, different order
+except ValueError as err:
+    print("reused id refused:", err)
+assert broker.cancel("c-1").status.value == "CANCELLED"
+assert broker.cancel("c-1").status.value == "CANCELLED"        # cancelling a finished order changes nothing
+assert broker.open_orders() == []
+
+# Drive a pair through it, with risk checks, exactly as run_paper does.
+limits = RiskLimits(max_gross=5e6, max_net=2e6, max_name_notional=3e6,
+                    locates=frozenset({"A", "B"}))
+executor = PairExecutor(broker, RiskEngine(limits), ("A", "B"), ExecutionConfig(0.5, 6))
+executor.enter(0, {"A": 4_000, "B": -3_000})
+for bar in range(1, 12):
+    quotes = {"A": Quote(50.0, 1e5, 50.0), "B": Quote(80.0, 1e5, 80.0)}
+    broker.on_bar(bar, quotes)
+    executor.step(bar, quotes)
+    if not executor.active:
+        break
+print("bar", bar, "outcome", executor.last_outcome.value, "positions", broker.positions())
+print("calls", dict(broker.calls), "fills", len(broker.fills()))
+```
+
+```text
+implements Broker: True
+reused id refused: client id c-1 reused for a different order
+bar 3 outcome FILLED positions {'A': 4000, 'B': -3000}
+calls {'submit': 7, 'cancel': 2} fills 4
+```
+
+The contract an adapter must keep, which the first block of the script checks:
+
+- `submit` of an order with a client id already seen and the same symbol, side
+  and quantity returns the original and does nothing; the same id with anything
+  different raises `ValueError`. Idempotence makes a retried send safe.
+- `cancel` of a finished order changes nothing.
+- Returned orders are snapshots; mutating one does not change the broker.
+- Fills carry a unique `fill_id`; the ledger refuses to book one twice.
+
+`isinstance(x, Broker)` checks method names only, not behaviour. Keep the
+checks above in a test of your own. `on_bar` is the simulator's clock and is not
+part of the interface; a real venue delivers fills asynchronously.
+
+---
+
+## 20. How do I reconcile a ledger and diagnose a break? (Python only)
+
+`Ledger` rebuilds positions and cash from fills and its own borrow accrual, so
+`reconcile(broker, bar)` compares two independent calculations. Each break has a
+kind, a key and both values, and is also written to the audit log.
+
+```python
+from dataclasses import replace
+
+from statarb.trading import Ledger, Order, PaperBroker, PaperBrokerConfig, Quote, Side
+
+cfg = PaperBrokerConfig(initial_cash=1_000_000.0, half_spread_bps=1.0, impact_bps=10.0,
+                        max_participation=0.5, commission_bps=0.5)
+broker = PaperBroker(cfg, seed=7)
+ledger = Ledger(cfg.initial_cash)
+quotes = {"A": Quote(50.0, 1e5, 50.0), "B": Quote(80.0, 1e5, 80.0)}
+
+broker.submit(Order("o-1", "A", Side.BUY, 1_000))
+broker.submit(Order("o-2", "B", Side.SELL, 500))
+broker.on_bar(0, quotes)
+fills = broker.fills()
+print("broker fills:", [(f.fill_id, f.symbol, f.signed_qty, round(f.price, 4)) for f in fills])
+
+def show(title, breaks):
+    print(f"\n{title}: {len(breaks)} break(s)")
+    for b in breaks:
+        print(f"  {b.kind.value:18} {b.key:8} ledger {b.ledger:>14,.2f}  broker {b.broker:>14,.2f}")
+
+# Case 1: the ledger never saw the second fill (a dropped message).
+ledger.apply_fill(fills[0])
+show("1. second fill not booked", ledger.reconcile(broker, bar=0))
+
+# Case 2: ingest() is safe with the full history; it books only what is missing.
+print("\ningest booked", ledger.ingest(broker.fills()), "new fill")
+show("2. after ingest", ledger.reconcile(broker, bar=0))
+
+# Case 3: same fill ids, but the ledger booked a wrong price on one (a bad feed).
+ledger2 = Ledger(cfg.initial_cash)
+ledger2.apply_fill(replace(fills[0], price=fills[0].price + 0.05))
+ledger2.apply_fill(fills[1])
+show("3. wrong price booked", ledger2.reconcile(broker, bar=0))
+
+# Case 4: the ledger holds a fill the broker never reported.
+ghost = replace(fills[0], fill_id="ghost#1")
+ledger.apply_fill(ghost)
+show("4. fill unknown to broker", ledger.reconcile(broker, bar=0))
+print("\naudit events written:", [r["event"] for r in ledger.audit.records])
+```
+
+```text
+broker fills: [('o-1#1', 'A', 1000, 50.01), ('o-2#2', 'B', -500, 79.9863)]
+
+1. second fill not booked: 3 break(s)
+  POSITION           B        ledger           0.00  broker        -500.00
+  CASH               cash     ledger     949,987.50  broker     989,978.67
+  MISSING_IN_LEDGER  o-2#2    ledger           0.00  broker           1.00
+
+ingest booked 1 new fill
+
+2. after ingest: 0 break(s)
+
+3. wrong price booked: 1 break(s)
+  CASH               cash     ledger     989,928.67  broker     989,978.67
+
+4. fill unknown to broker: 3 break(s)
+  POSITION           A        ledger       2,000.00  broker       1,000.00
+  CASH               cash     ledger     939,966.17  broker     989,978.67
+  MISSING_AT_BROKER  ghost#1  ledger           1.00  broker           0.00
+
+audit events written: ['fill', 'reconciliation_break', 'reconciliation_break', 'reconciliation_break', 'fill', 'fill', 'reconciliation_break', 'reconciliation_break', 'reconciliation_break']
+```
+
+Reading the pattern:
+
+| Breaks seen | Likely cause | Fix |
+|---|---|---|
+| `POSITION` + `CASH` + `MISSING_IN_LEDGER` | the ledger missed a fill (dropped message) | `ledger.ingest(broker.fills())`; it books only what it has not seen (case 2 shows zero breaks) |
+| `CASH` only | positions agree, so a wrong price, fee or borrow was booked (case 3: a price 0.05 high on 1,000 shares is a 50.00 cash break) | find the fill whose booked value differs; correct the source, do not adjust cash |
+| `POSITION` + `CASH` + `MISSING_AT_BROKER` | the ledger booked a fill the broker never reported (case 4) | do not trade until it is explained; the fill may be a duplicate or belong to another account |
+
+In `run_paper`, any break trips the kill switch with reason
+`RECONCILIATION_BREAK` and the runner flattens. Clearing it needs
+`reset_kill_switch(bar, operator, note)`, which is itself written to the audit
+log. A reset restarts the drawdown peak from the last equity, so it is a risk
+decision.
+
+---
+
+## 21. How do I run the Rust and Java benchmarks?
+
+```bash
+# Rust (from rust/)
+cargo run --release --bin bench
+
+# Java (from java/)
+bash build.sh
+bash bench.sh            # optional argument: data directory
+```
+
+Both time `RollingZ.update` and `KalmanStep.update` in batches of 64 updates
+and report percentiles of the batch averages, then throughput of the batch
+rolling z-score and the backtest on the bundled pair. The figures published in
+the README are the median of three runs on one noisy Windows machine (ns per
+update):
+
+| | p50 | p99 | p99.9 | max |
+|---|---:|---:|---:|---:|
+| Rust `RollingZ` | 6.2 | 25.0 | 45.3 | 2684 |
+| Rust `KalmanStep` | 17.2 | 29.7 | 232.8 | 2137 |
+| Java `RollingZ` | 14.1 | 29.7 | 182.8 | 2477 |
+| Java `KalmanStep` | 31.3 | 50.0 | 268.8 | 3155 |
+
+Throughput there: Rust rolling z-score 21.9M bars/s, backtest 13.6M; Java 10.47M
+and 7.37M observations/s. Your numbers will differ. Close other programs, run
+more than once and compare p50; treat p99.9 and `max` as operating-system
+jitter. These are not tick-to-trade figures and the Java harness is not JMH.
+LEARN.md section 10c explains how to read them. These two commands were not
+re-run for this cookbook; the table is from the release measurement.
+
+---
+
+## 22. How do I reproduce the two real-data studies?
+
+Both scripts read daily Yahoo Finance data over the public chart endpoint (no
+account), cache it in `research/real_data_2026_11/.cache/` (git-ignored) and
+never commit raw prices. They need network access and numpy, and run from
+the study folder:
+
+```bash
+cd research/real_data_2026_11
+python study.py dev          # development period 2012-2019: pipeline bugs only
+python study.py holdout      # 2020-2026: the one run
+
+cd ../sector_residual_2026_11
+python residual.py dev
+python residual.py holdout   # reuses the pairs study's price cache
+```
+
+Compare against `results_dev.json` and `results_holdout.json` in each folder.
+Yahoo adjusts history retroactively and some names change, so numbers can move
+slightly. The committed results, for reference:
+
+| Study | Holdout net Sharpe | Gate 1 (>= 1.0) | Gross return a year | Trades |
+|---|---:|---|---:|---:|
+| Pairs (`real_data_2026_11`) | -0.42 | FAIL | -0.10% | 46 |
+| Sector-residual (`sector_residual_2026_11`) | -0.32 | FAIL | +0.31% | 3,800 |
+
+Both are null. Do not rerun the holdout to "try again": the preregistration says
+it runs once, and a variant is a new study (recipe 23). These two commands need
+the network and were not re-run for this cookbook.
+
+---
+
+## 23. How do I start a new preregistered study from a template?
+
+Create `research/<name>_<yyyy_mm>/PREREGISTRATION.md` from the template below,
+fill every field with a number or a rule, commit it **before** downloading any
+data or running anything, and add `study.py` only after that commit. Git
+history is the timestamp. If an earlier study used the same years or names,
+disclose it and count it as a trial (`deflated_sharpe` takes the number of
+trials).
+
+```markdown
+# Preregistration: <short name>
+
+Written <date>, before this strategy was run on any data. Git history is the timestamp.
+Everything below is fixed. Any change after this commit is reported as a deviation.
+
+## Disclosure
+Earlier trials on these years or names: <none | list>. Trials counted for the deflated Sharpe: <N>.
+
+## Question
+<one yes/no question>
+
+## Data and universe
+Source, adjustment, names, groups. Known biases (survivors only? point-in-time?).
+
+## Signal
+<exact formula; every parameter a round number fixed now>
+
+## Trading
+Entry, exit, stop, maximum hold, sizing, execution lag (signal at close t, trade at close t+1).
+
+## Accounting
+Costs per side by instrument, borrow, how capital is defined, what is ignored.
+
+## Periods
+Development <from> to <to>: pipeline bugs only, parameters may not change.
+Holdout <from> to <to>: run once. Gates use this only.
+
+## Pass gates (holdout, all required)
+1. Net annualised Sharpe >= <x>.
+2. Probabilistic Sharpe vs 0 >= 0.95, and block-bootstrap 95% CI lower bound > 0 (block, draws, seed fixed).
+3. Max drawdown <= <x>% of capital.
+4. |beta to SPY| <= <x>.
+5. Capacity at entry >= $<x>.
+6. Deflated Sharpe >= 0.95 with <N> trials.
+
+## Also reported, not gates
+Gross return, development results, turnover, trades, win rate, net Sharpe at several costs, Sharpe by calendar year, worst day.
+
+## Outcome rule
+Fail any gate: report a null and do not tune. Any variant is a new study.
+```
+
+After the preregistration commit: write the script, run `dev` and fix bugs only,
+run `holdout` once, and publish `RESULTS.md` with the gate table, the other
+figures, what the result shows, its limits, and the decision. Report a miss as a
+null. The two existing studies are worked examples
+(`research/real_data_2026_11` and `research/sector_residual_2026_11`). See also
+recipe 16 and LEARN.md section 9.9.
+
+---
 
 ## Verifying the non-Python snippets
 
@@ -836,8 +1365,8 @@ Every C++, Rust and Java block in recipes 1–12 is extracted in order, the
 `#include` / `use` / `import` lines hoisted, the rest wrapped in a `main`,
 and the result compiled against the built library and run from the
 language's own directory (so `../data` resolves). This is how the recipes
-are checked at release; the Python blocks (including 13–15) are run directly
-from `python/`. The commands are:
+are checked at release; the Python blocks (including 13–15 and 17–20) are run directly
+from `python/` with `PYTHONPATH=src`. The commands are:
 
 ```bash
 # C++ (from cpp/, after bash build.sh)

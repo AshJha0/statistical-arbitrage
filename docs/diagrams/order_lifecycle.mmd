@@ -1,0 +1,13 @@
+stateDiagram-v2
+    [*] --> NEW : submit
+    NEW --> PARTIAL : fill of part of qty
+    NEW --> FILLED : fill of all qty
+    NEW --> CANCELLED : cancel
+    NEW --> REJECTED : broker refuses, e.g. BORROW_UNAVAILABLE
+    PARTIAL --> PARTIAL : another partial fill
+    PARTIAL --> FILLED : last shares fill
+    PARTIAL --> CANCELLED : cancel keeps filled_qty
+    FILLED --> [*]
+    CANCELLED --> [*]
+    REJECTED --> [*]
+    note right of PARTIAL : Any other move raises IllegalTransition.\nA cancel on a finished order changes nothing.\nResending a client id returns the original order.

@@ -5,12 +5,81 @@ generated data and are not evidence of edge. The review behind v1.2.0 is
 `review/2026-11-05/REVIEW.md`; the contract is
 `review/2026-11-05/CONTRACT_v1.2.md`, folded into `API_SPEC.md`.
 
-## Unreleased
+## 1.2.1 (2026-11-05)
 
-- Docs brought in line with both studies; Java artifact version set to 1.2.0.
-- Sector-residual reversal study, preregistered: null result (holdout net Sharpe -0.32). See `research/sector_residual_2026_11/RESULTS.md`.
-- Real-data pairs study, preregistered: null result (holdout net Sharpe -0.42). See `research/real_data_2026_11/RESULTS.md`.
-- CI: action versions updated, runner pinned to ubuntu-24.04.
+Benchmark figures vary: a re-run on the same machine under load was 2-3x slower (Rust RollingZ p50 20 ns against 6 ns). Treat them as order-of-magnitude only.
+
+No change to the pinned contract: the 928 golden cases, the Python reference
+and the four-language behaviour are as in 1.2.0. This release adds a
+paper-trading layer around the pairs rule, latency benchmarks, two real-data
+studies and a documentation pass. Test counts: Python 1248, C++ 107, Rust 115,
+Java 109.
+
+### Added (Python only, outside the ported contract)
+
+- `statarb.trading`: **paper trading only**. No network code, no credentials,
+  no live-order path. Orders and the order state machine (`orders.py`), a
+  deterministic `PaperBroker` with half-spread, square-root impact, a
+  participation cap, latency, borrow and commission (`broker.py`); a `Broker`
+  interface a later adapter could implement; `PairExecutor`, which paces the
+  two legs so one never runs more than `max_imbalance_frac` ahead and unwinds a
+  stalled entry (`execution.py`); `RiskEngine` with pre-trade limits (restricted
+  list, locates, price band, order size against ADV, name, gross and net
+  notional), reducing orders that always pass, and a latching drawdown kill
+  switch (`risk.py`); an independent `Ledger` with reconciliation, cost
+  attribution and an append-only JSONL `AuditLog` (`ledger.py`); and
+  `run_paper`, the day loop (`runner.py`). A live adapter is an owner decision
+  and is not part of this release.
+- `python/demo_paper.py`: the bundled pair out of sample, 600 days, paper
+  traded. Backtest -49,084; frictionless paper -45,526; with the assumed
+  fills, costs and limits +3,953 for seed 42 (spread P&L at mid +12,841, costs
+  and borrow -8,889, no rejections). Twenty fill seeds gave -477 to +3,801.
+  Costless fill delay alone moves the result from -45,526 (0 bars) to -16,782
+  (2 bars) and +19,743 (4 bars). P&L here is very sensitive to entry timing.
+  It is one synthetic path with about 9 trades and is not evidence of an edge.
+  ADV and all fill-model costs are assumptions. Limits are checked at
+  decision prices, so a later price move can take exposure past one.
+- `rust/src/bin/bench.rs` and `java/.../Bench.java` (`java/bench.sh`):
+  per-update latency of `RollingZ` and `KalmanStep` over batches of 64, plus
+  throughput. See the README for figures and caveats: batch averages, median of
+  three runs on one noisy Windows machine, not tick-to-trade, not JMH.
+- `docs/diagrams`: order lifecycle, paper flow, pair-entry leg risk, research
+  protocol, sector-residual pipeline.
+
+### Changed
+
+- Rust and Java `jacobi_eigh` / Jacobi rotation now update only rows and
+  columns p and q in place instead of multiplying full matrices, with the same
+  operands in the same order. Results are bit-identical; goldens unchanged. The
+  Java ordering array is `int[]` rather than `Integer[]`. Not done: Java flat
+  matrices and removing the boxed `Map` from results (both are public API);
+  Rust OLS is unchanged (at most 4x4).
+- Version set to 1.2.1 in Python, Rust (`Cargo.toml`, `Cargo.lock`) and Java.
+
+### Research
+
+- Sector-residual reversal study, preregistered: null result (holdout net
+  Sharpe -0.32). See `research/sector_residual_2026_11/RESULTS.md`.
+- Real-data pairs study, preregistered: null result (holdout net Sharpe
+  -0.42). See `research/real_data_2026_11/RESULTS.md`.
+
+### Documentation
+
+- LEARN: why cointegration can pass and trading still fail, reading a
+  preregistration, execution basics with numbers, pre-trade risk and kill
+  switches, reading latency numbers, and new knowledge-check questions.
+- COOKBOOK recipes 17-23: paper run and audit trail, adding a risk limit, a
+  broker adapter, reconciliation, benchmarks, reproducing the studies, a
+  preregistration template. Every Python recipe was run and the output quoted
+  is real.
+- README, API_SPEC (trading and research are outside the ported contract),
+  ARCHITECTURE and the site updated; the "no benchmarks" statements removed.
+
+### Known limits
+
+Trading layers are Python only and paper only. ADV and costs are assumed; the
+CSV has no volume. Real-data studies stay null. CI: action versions updated,
+runner pinned to ubuntu-24.04.
 
 ## 1.2.0
 

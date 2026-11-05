@@ -374,16 +374,28 @@ public final class LinAlg {
                             : Math.signum(theta) / (Math.abs(theta) + Math.sqrt(theta * theta + 1.0));
                     double c = 1.0 / Math.sqrt(t * t + 1.0);
                     double s = t * c;
-                    // A := J' A J and V := V J with the (p, q) plane rotation
-                    // J[p][p]=c, J[q][q]=c, J[p][q]=s, J[q][p]=-s, done as
-                    // full small-matrix products to mirror the reference.
-                    double[][] j = identity(n);
-                    j[p][p] = c;
-                    j[q][q] = c;
-                    j[p][q] = s;
-                    j[q][p] = -s;
-                    m = matmul(matmul(transpose(j), m), j);
-                    v = matmul(v, j);
+                    // A := J' A J and V := V J, applied in place to rows/columns
+                    // p and q only. Each entry is the same two-term sum, in the
+                    // same order, as the full J'AJ product (the other terms
+                    // are exact zeros), so results are unchanged.
+                    for (int k = 0; k < n; k++) {
+                        double rp = m[p][k];
+                        double rq = m[q][k];
+                        m[p][k] = c * rp + (-s) * rq;
+                        m[q][k] = s * rp + c * rq;
+                    }
+                    for (int k = 0; k < n; k++) {
+                        double[] mk = m[k];
+                        double tp = mk[p];
+                        double tq = mk[q];
+                        mk[p] = tp * c + tq * (-s);
+                        mk[q] = tp * s + tq * c;
+                        double[] vk = v[k];
+                        double vp = vk[p];
+                        double vq = vk[q];
+                        vk[p] = vp * c + vq * (-s);
+                        vk[q] = vp * s + vq * c;
+                    }
                 }
             }
         }
@@ -391,11 +403,15 @@ public final class LinAlg {
         for (int i = 0; i < n; i++) {
             vals[i] = m[i][i];
         }
-        Integer[] order = new Integer[n];
+        int[] order = new int[n];
         for (int i = 0; i < n; i++) {
-            order[i] = i;
+            int k = i;
+            while (k > 0 && Double.compare(vals[i], vals[order[k - 1]]) > 0) {
+                order[k] = order[k - 1];
+                k--;
+            }
+            order[k] = i;
         }
-        java.util.Arrays.sort(order, (i, j) -> Double.compare(vals[j], vals[i]));
         double[] sortedVals = new double[n];
         double[][] sortedVecs = new double[n][n];
         for (int c = 0; c < n; c++) {

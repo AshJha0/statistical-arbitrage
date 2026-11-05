@@ -8,6 +8,10 @@ quantified through the half-life, why a Kalman filter tracks a drifting hedge
 ratio when OLS cannot, and — the part textbooks skip — how pairs trades are
 actually run, costed, and killed in practice.
 
+Sections 9.8-9.9 and 10a-10c (v1.2.1) cover what a cointegration test does
+not tell you, how to read a preregistration, execution and risk basics for the
+Python paper-trading layer, and how to read latency tables.
+
 Worked numbers come from the bundled data. Statistics and the full-sample
 backtest match `data/golden/golden.json`; the holdout, rolling and bootstrap
 numbers in §9 are the Python demo's output. The data is synthetic, so none
@@ -709,13 +713,19 @@ meant to be called:
   pair's generator is the model under test. Over 300 seeds without a break,
   out-of-sample Sharpe is 1.44: that recovers the generator, which is not
   evidence of edge (C1).
-- **Not tradable as is.** No borrow, impact, capacity, locate or calendar
-  logic; fractional quantities; both legs at one close; a flat 1.5 bps.
-- **Not low latency.** Batch functions allocate and the z-score is O(T·W).
+- **Not tradable as is.** The four-language backtest has no borrow, impact,
+  capacity, locate or calendar logic, uses fractional quantities, fills both
+  legs at one close and charges a flat 1.5 bps. The Python paper layer
+  (sections 10a-10b) adds whole shares, impact, borrow, locates and limits, but
+  it is paper only with no live broker, ADV and costs are assumed, limits are
+  checked at decision prices, and it trades one pair.
+- **Not tick-to-trade.** Batch functions allocate and the z-score is O(T·W).
   `RollingZ` and `KalmanStep` are O(1) per update, but `RollingZ` keeps
   running sums and drifts about 5e−8 after 50,000 updates at a level of 1e4,
   so it is not bitwise equal to batch; batch is the trading reference.
-  There are no benchmarks and no order or feed layer.
+  The Rust and Java benchmarks (section 10c) are batch averages of one
+  arithmetic update on one noisy machine and exclude any feed, book or order
+  path.
 - **Research helpers are judgement aids.** `statarb.research` (Python only)
   has no universe, no survivorship handling and no preregistered holdout. In
   the v1.1.0 review, 32 of 780 independent random-walk pairs passed EG; their
@@ -729,6 +739,102 @@ meant to be called:
   and a rare large loss, the shape of a short-volatility trade. These
   describe the generator, not a market. The real-data studies found no
   profit.
+
+### 9.8 Why cointegration can pass and trading still fail
+
+**The plain idea.** A cointegration test asks one question about a past
+window: does this spread look like it stays near a level? Trading asks a
+different one: over the next few months, will the spread come back far enough,
+often enough, to pay for the costs and the occasional break? A pair can answer
+yes to the first and no to the second, in at least four separate ways.
+
+**The formal statement.** Engle–Granger's null is "no cointegration", so a
+rejection at 5% means a sample like this one would arise from a pure random-walk
+pair about 5% of the time. It says nothing about four things a trade needs:
+
+1. *Selection noise.* Test many pairs and some pass by chance. In the v1.1.0
+   review, 32 of 780 independent random-walk pairs (4.1%) passed Engle–Granger
+   on one window; their mean in-sample Sharpe was 0.76 and out of sample
+   -0.16 (C2). The bundled `scan_pairs` uses Benjamini–Hochberg to control this,
+   which is why it keeps so few pairs.
+2. *Parameter error and decay.* The hedge ratio is estimated on the formation
+   window and then held. If the relationship drifts, the traded spread is not the
+   tested spread.
+3. *Size of the edge against costs.* Stationary is not the same as profitable.
+   A spread that reverts weakly earns less than a round trip costs.
+4. *Breaks and stops.* The loss when a relationship ends is larger than the
+   stop, because the stop acts at the next close.
+
+**Worked example 1: the pairs study.** `research/real_data_2026_11` selected
+pairs inside sector groups with Engle–Granger in both directions, a lag chosen
+by BIC and Benjamini–Hochberg at q = 0.05. Fewer pairs survived than the 20
+slots available: 0 to 5 per period, and none in four of the last five holdout
+periods. About a third of holdout periods (36%) had no pairs at all. When it did trade, gross return was about zero (-0.10% a year on
+gross capital in 2020-2026), so costs were not the main problem; there was no
+edge to pay them from. The worst holdout trade lost 5.7% of pair capital against a
+2% stop. Net Sharpe was -0.42. The filter did what it is for: it was strict and
+kept almost nothing. What it kept did not keep reverting after formation.
+
+**Worked example 2: the sector-residual study.** `research/sector_residual_2026_11`
+removed the thin-book problem: about 24 positions were open on average and the
+holdout had 3,800 trades. Gross return was +0.31% a year (gross Sharpe 0.26) and
+net was -0.37%, so costs took about 0.68% a year, more than the whole gross
+return. At 2 bps instead of 5 the net Sharpe was still -0.09. Only 2020 was
+positive (net Sharpe 0.98 in that year; the other six calendar years were
+negative). Here the effect was present but small: too small for the costs.
+
+**What to take from the pair of results.** Passing a stationarity test is
+necessary for a pairs idea to make sense, not sufficient for it to make money.
+The two failures are different: one found almost nothing to trade, the other
+traded constantly and earned less than it paid. Both are upper bounds, because
+the universe is today's survivors. Both are limited to daily free data, one
+parameter set each and the years 2012-2026. They do not show that no such
+strategy works.
+
+### 9.9 Reading a preregistration, and why a holdout is used once
+
+**The plain idea.** A preregistration is a note, committed before the data is
+looked at, that says what will be run and what counts as success. Git history
+is the timestamp. It exists because after you have seen a result it is very
+easy to find a reason to adjust the rule.
+
+**How to read one.** Take `research/sector_residual_2026_11/PREREGISTRATION.md`
+in this order:
+
+| Part | What to check |
+|---|---|
+| Disclosure | Is this a repeat? This is the second trial on these years, so the deflated Sharpe counts 2 trials. |
+| Question | One yes/no question. |
+| Data and universe | Where from, which names, known biases. Survivors only: a pass would be weak evidence, a fail strong. |
+| Signal and trading | Every parameter is a number, round and fixed (1.25, 0.5, 20 days). Nothing is "tuned later". |
+| Accounting | Costs (5 bps stock, 2 bps ETF), borrow, how capital is defined. |
+| Periods | Development: pipeline bugs only. Holdout: run once. |
+| Gates | All must pass, numeric, written down. |
+| Outcome rule | Fail any gate: report a null, do not tune. A variant is a new study. |
+
+**The formal reason for "once".** Every look at the holdout is a trial. If you
+try N variants of a rule with no edge and keep the best, the best Sharpe is the
+maximum of N noisy estimates. A Sharpe estimated over T years has a standard
+error of about 1/sqrt(T) when the true value is near zero. The holdout here is
+1,717 days, 6.8 years, so the standard error is about 0.38. The expected maximum of N
+independent standard normals is about 1.16 for N = 5, 1.54 for N = 10 and 1.87
+for N = 20 (computed here by numerical integration, not taken from the study).
+
+**Worked example.** Ten variants of a rule with true Sharpe zero, each scored on
+this holdout: the expected best is about 1.54 x 0.38 = 0.59. Twenty variants:
+about 1.87 x 0.38 = 0.72. Neither clears the 1.0 gate on its own, but each is
+a result a hopeful reader would describe as "a promising 0.6". The probabilistic
+Sharpe and the deflated Sharpe in `statarb.research` exist to account for this.
+The study's deflated Sharpe with 2 trials was 0.18 against a required 0.95. A
+holdout that has been run, looked at and adjusted is no longer a holdout; it
+becomes more development data, and the next test needs new data.
+
+**Two honest caveats from the studies themselves.** One choice was not in the
+sector-residual preregistration (the variance input of the deflated Sharpe); it
+was fixed before the holdout ran and changed nothing, since the undeflated
+probabilistic Sharpe already failed. And the pairs study's selection looked at the
+trading window for completeness, a small look-ahead that favours the strategy.
+Both are written in the results files, which is the point of the format.
 
 ---
 
@@ -788,6 +894,213 @@ non-cointegrated pairs (the spurious case is diagnosed and no backtest is
 run), out-of-sample evaluation as the default honesty check, explicit P&L,
 time and cool-down limits in the state machine, and an accounting identity test (equity change ≡ Σpnl −
 Σcosts at 1e−10) so the backtester itself cannot quietly leak money.
+
+---
+
+## 10a. Execution basics
+
+Everything in this section and the next two is implemented in
+`statarb.trading`, which is **Python only and paper only**: no network code, no
+credentials, no live broker. ADV (average daily volume) and all costs are
+assumed, because the bundled CSVs have no volume. The numbers below are
+arithmetic on those assumptions and on real output from the repository's code;
+they show how the pieces work, not what a market charges.
+
+### 10a.1 Spread, impact and participation
+
+**The plain idea.** You do not trade at the mid price. You pay half the
+bid-ask spread to cross it, and a larger order moves the price against you
+further. And you cannot trade more than the market will absorb in a bar.
+
+**The formal model** (`PaperBroker._execute`). For a fill of `q` shares in a
+name with average daily volume `ADV`, mid `m`:
+
+- half-spread, in basis points: `h` (a parameter, 1.0 in the demo);
+- impact, in basis points: `k * sqrt(q / ADV)` with `k = impact_bps`, the
+  impact at 100% of ADV;
+- fill price: `m * (1 + side * (h + impact) / 10^4)`, `side` = +1 buy, -1 sell;
+- commission: `c` bps of the fill's value;
+- participation cap: at most `max_participation * ADV` shares of one name per
+  bar, so a large order is filled over several bars.
+
+**Worked example.** Buy 1,000 shares at mid 50, ADV 100,000, `h` = 1 bp,
+`k` = 10 bps, commission 0.5 bp (the settings in COOKBOOK recipe 20).
+
+| Item | Working | Dollars |
+|---|---|---:|
+| Half-spread | 1,000 x 50 x 1 bp | 5.00 |
+| Impact | 10 x sqrt(1,000 / 100,000) = 1.0 bp; 1,000 x 50 x 1 bp | 5.00 |
+| Fill price | 50 x (1 + 2 bp) | 50.01 |
+| Commission | 0.5 bp x 50,010 | 2.50 |
+| Total cost | | 12.50 |
+
+The ledger shows the same: cash falls from 1,000,000 to 949,987.50, which is
+50,010 + 2.50.
+
+*Why the square root matters.* Quadruple the order to 4,000 shares and the impact
+rate doubles to 2 bps, because sqrt(4) = 2. But the dollar cost is rate times
+size: 4,000 x 50 x 2 bp = 40.00 against 5.00, eight times as much for four
+times the shares. Costs per share rise with size, so the cheap way to trade a
+large order is slowly, which is what the participation cap and the executor
+enforce.
+
+*Participation.* The pair entry at bar 106 of the paper run needs 3,097 shares
+of y and 5,077 of x. With ADV 100,000 and the demo's cap of 2% (before a random
+cut of up to 30%), one bar can fill about 2,000 shares of a name, so x alone
+needs at least three bars. A backtest that fills both legs at one close assumes
+all of this away.
+
+### 10a.2 Leg risk
+
+**The plain idea.** A pair is two trades. If one fills and the other has not,
+you are not holding a spread, you are holding a directional position in one
+stock.
+
+**The formal bound** (`PairExecutor`). Let progress of a leg be filled shares
+over target shares. Let `m` be the progress of the slower leg and `b` =
+`max_imbalance_frac`. On each step a leg may have at most
+`ceil((m + b) x target)` shares sent. So the faster leg can never be more than
+about `b` ahead of the slower one, whatever the fill model does, and the bound
+does not rely on the other leg filling. If the entry is incomplete after
+`timeout_bars`, or a child order is rejected, the remainder is cancelled and
+what filled is unwound back to the start, paced the same way, so measured
+against the original target the imbalance stays under `2b` plus rounding.
+Exits and unwinds retry until done.
+
+**Worked example** (real, from the audit trail in COOKBOOK recipe 17; `b` = 0.5).
+At bar 106 the rule signals a short spread: sell 3,097 y at about 171.98
+(532,636) and buy 5,077 x at about 92.03 (467,228), gross 999,864 against a
+capital of 1,000,000. Both legs start at progress 0, so each may send
+`ceil(0.5 x target)`: 1,549 y and 2,539 x. y fills at bar 107; x has a one-bar
+latency in this demo and fills 1,925 of its 2,539 at bar 108. Now y progress is
+1,549 / 3,097 = 0.50 and x is 1,925 / 5,077 = 0.38, so the slower leg is at 0.38 and
+each leg may send up to ceil(0.88 x target): 1,174 more y and 1,925 more x.
+Without the bound, a quiet x market could leave 1,549 shares of y (about
+266,400) short and unhedged: a 1% move in y is 2,664 dollars of pure
+directional P&L.
+
+### 10a.3 Timing is most of the P&L
+
+The paper demo (`python/demo_paper.py`) makes the point uncomfortably. On the
+bundled pair, out of sample (600 days, synthetic): the backtest loses 49,084;
+the frictionless paper run loses 45,526; with assumed costs, staged fills,
+participation caps and limits, seed 42 earns +3,953. Of that, the spread P&L at
+mid is +12,841 and costs and borrow are -8,889. Costs made things worse, so the
+gain is not from costs. Delaying both legs by whole bars with no costs at all
+gives -45,526 (0 bars), -38,071 (1), -16,782 (2), +2,505 (3) and +19,743 (4).
+
+**This is not an edge.** It is one synthetic path with about 9 trades, looked at
+after the fact. It says the P&L is very sensitive to when you enter, which means a
+backtest that fills at one close is giving a number that depends on a
+convention. Delay has not been tested as a rule on unseen data, and twenty fill
+seeds ranged from -477 to +3,801, which is fill noise only, not a confidence
+interval on the strategy.
+
+---
+
+## 10b. Pre-trade risk and kill switches
+
+**The plain idea.** Before an order leaves, a separate piece of code checks it
+against limits that do not depend on the signal being right. After trades,
+another check watches the account, and if it breaches, stops new risk until a
+person looks.
+
+**The checks** (`RiskEngine.check`). Restricted names; shorting without a locate;
+a bad or missing price, ADV or previous close; a price band against the previous
+close; order size against ADV; and name, gross and net notional. Exposure is
+measured at the worst case: the current position plus every open order on the
+same side plus the new order, at the current mid. That way the limits hold
+however working orders end up filling. All failed reasons are returned and
+logged, not just the first.
+
+**Worked example.** Limit 120,000 in one name, mid 100. You hold +900 shares and
+have a working buy of 100. A new buy of 200 gives a worst case of 900 + 100 + 200
+= 1,200 shares, 120,000 dollars: at the limit, passes (the other limits are
+assumed ample). A buy of 201 gives 120,100 and is refused.
+
+**Why reducing orders always pass.** An order is *reducing* if, even with every
+open order filled, it can only move the position toward zero and cannot cross
+it. Reducing orders skip the limit checks (they are still logged). The reason:
+limits are checked at decision prices, so a price move can put you over a limit
+with no trade. If the engine then refused the sell that brings you back under
+it, the control would trap the risk it exists to cut. The same holds under the
+kill switch, in a name that became restricted after entry, and on bad market
+data: risk must always be able to come off. Crossing zero is not reducing: holding
++900 and selling 2,000 ends at -1,100, a new short, and is checked as one
+(COOKBOOK recipe 18 runs this).
+
+**Kill switch.** The drawdown switch latches when equity falls from its peak by
+at least `max_drawdown_frac` of the peak. With a peak of 1,000,000 and 0.10, it
+trips at 900,000. A reconciliation break (section 10b.1 below) or non-finite
+equity trips it too. Once tripped, new risk is refused and the runner flattens;
+only `reset_kill_switch(bar, operator, note)` clears it, and it requires a name
+and a note, which are written to the audit log. A reset restarts the drawdown
+peak from the last equity, so the allowance is renewed from a lower base: a
+reset is a risk decision, not a formality.
+
+**Limits of the design.** Limits are tested at decision prices. A later price move
+can take exposure past a limit with no trade, and from then on only orders that do
+not raise the breached measure pass. ADV is assumed. The checks cover one pair.
+
+### 10b.1 The ledger as an independent check
+
+The `Ledger` rebuilds positions and cash from fills and its own borrow accrual,
+without reading the broker's numbers. `reconcile` then compares the two. That is
+the point of keeping books twice: a bug or a lost message in either shows up as a
+*break*. Position and cash breaks, a fill the ledger lacks, and a fill the broker
+lacks are separate kinds, so the pattern points at the cause (COOKBOOK recipe 20
+reproduces four). Every break is written to the audit log, and in `run_paper` a
+break trips the kill switch.
+
+---
+
+## 10c. Reading latency numbers
+
+The repository has two small harnesses, `rust/src/bin/bench.rs` and
+`java/.../Bench.java`, that time the streaming `RollingZ.update` and
+`KalmanStep.update`. This section is about reading such tables, using this one.
+
+| ns per update | p50 | p99 | p99.9 | max |
+|---|---:|---:|---:|---:|
+| Rust `RollingZ` | 6.2 | 25.0 | 45.3 | 2684 |
+| Rust `KalmanStep` | 17.2 | 29.7 | 232.8 | 2137 |
+| Java `RollingZ` | 14.1 | 29.7 | 182.8 | 2477 |
+| Java `KalmanStep` | 31.3 | 50.0 | 268.8 | 3155 |
+
+**p50 versus p99.9.** p50 is the typical case: half of all measurements are
+faster. p99.9 is the case you meet one time in a thousand. In a system that
+reacts to every tick, the tail sets the worst moments, and those are the moments
+that matter most. Rust `KalmanStep` has p50 17.2 ns and p99.9 232.8 ns, 13.5 times
+larger; the middle alone would hide that.
+
+**These are batch averages.** A clock read costs about as much as one update, so
+each measurement times a batch of 64 updates and divides by 64. Percentiles are
+of those batch averages, not of single updates, and they smooth outliers.
+Worked example: if 63 updates take 6.2 ns each and one takes 1,000 ns, the batch
+averages (63 x 6.2 + 1,000) / 64 = 21.7 ns, which is below the p99 of 25.0 in the Rust
+`RollingZ` row and looks unremarkable. A single update 160 times
+slower than usual is invisible. The reverse also holds: the `max` of 2,684 ns for
+Rust `RollingZ` is a batch that took 2,684 x 64 = 171.8 microseconds in total.
+That is not one slow update, it is one pause of about 0.17 ms, most likely the
+operating system taking the core.
+
+**What the figures are not.**
+
+- Not tick-to-trade. They time one arithmetic update on warm data. A real path
+  also has a network read, decoding, an order book, the decision, risk checks,
+  encoding and a network write, each with its own tail.
+- Not JMH. The Java harness warms up and folds results into a sink so the JIT
+  cannot drop the work, but it is a plain `nanoTime` loop.
+- One machine, a noisy Windows desktop, median of 3 runs. Treat p50 as
+  indicative and p99.9 and `max` as jitter. A table like this does not show that
+  Rust is faster than Java in general, only what these two programs did here.
+- The throughput figures answer a different question. The Rust batch rolling
+  z-score runs at 21.9M bars/s, about 46 ns a bar, against 6.2 ns for the
+  streaming update, because the batch version recomputes each 60-day window
+  (O(T x W)). The streaming `RollingZ` is O(1) per update and agrees with batch
+  to 1e-9; the batch version stays the reference for trading decisions.
+- The Python paper layer is nowhere near this regime. It is a research
+  simulation, not a low-latency path.
 
 ---
 
@@ -929,6 +1242,77 @@ backtests; many spreads reverted within days. Portable lesson: crowded
 positions carry a risk factor that is not in your covariance matrix — the
 other holders' leverage and funding — so size assuming you may have to exit
 alongside everyone who holds what you hold.
+
+**Q11. A pair passes Engle–Granger at 5% on the formation window and then loses
+money. Name three reasons that do not mean the test was wrong.**
+(1) Selection: test enough pairs and about 5% pass on pure noise; in the
+review, 32 of 780 independent random-walk pairs passed, with in-sample Sharpe
+0.76 and out-of-sample -0.16. (2) The hedge ratio was estimated once and the
+relationship moved, so the traded spread is not the tested spread. (3) The
+reversion is real but smaller than costs: the sector-residual study had gross
+return +0.31% a year and net -0.37%. A fourth is breaks, where the loss beats the
+stop because it acts at the next close (worst pairs-study trade -5.7% against a
+2% stop).
+
+**Q12. What belongs in a preregistration, and why is the holdout run once?**
+The question, data and universe with known biases, the exact rule with fixed
+numbers, the accounting and costs, the development and holdout periods, numeric
+pass gates, and the outcome rule (fail a gate: report a null, do not tune). It is
+committed before the data is looked at so git history timestamps it. The holdout
+is run once because each look is a trial: with a Sharpe standard error near 0.38
+on 6.8 years, the expected best of ten zero-edge variants is about 1.54 x 0.38 =
+0.59, which looks promising and is noise. A holdout that has been used to adjust
+the rule is development data.
+
+**Q13. Buying 4,000 shares costs how many times as much impact as buying
+1,000, given impact in bps of `k x sqrt(q / ADV)`?**
+Eight. The rate doubles (sqrt 4 = 2) and the quantity is four times as large.
+With ADV 100,000, `k` = 10 bps and mid 50: 1,000 shares pay 1 bp, 5.00 dollars;
+4,000 shares pay 2 bps, 40.00 dollars. The practical conclusion is to trade a
+large order slowly, which also needs a participation cap.
+
+**Q14. In the pair executor with `b` = 0.5, one leg's target is 2,000 shares
+and the other's is 1,000. What is the most each can have sent at the start, and
+what is guaranteed afterwards?**
+Both legs start at progress 0, so the 2,000-share leg may send
+ceil(0.5 x 2,000) = 1,000 and the 1,000-share leg ceil(0.5 x 1,000) = 500. After
+that, a leg may send up to ceil((m + b) x target) where `m` is the slower leg's
+progress, so the legs' progress never differs by more than `b` plus one share of
+rounding (and under `2b` after an unwind), whatever the fills do. A rejected
+child or a timeout cancels the entry and unwinds what filled.
+
+**Q15. Why does a risk engine let a reducing order through when every limit is
+breached, and which order is not reducing?**
+Limits are checked at decision prices, so price moves can breach a limit with
+no trade, and the kill switch may be on. Blocking the order that moves the
+position toward zero would keep the risk on. An order is reducing if, even with
+all open orders filled, it can only move the position toward zero. An order that
+crosses zero is not reducing: holding +900 and selling 2,000 ends at -1,100.
+
+**Q16. A table says p50 17 ns and p99.9 233 ns. Is a single update ever 233 ns?**
+The table does not say. Each figure is a percentile of 64-update batch averages,
+so it smooths single-update outliers: one 1,000 ns update among 63 of 6.2 ns
+averages only 21.7 ns. A `max` of 2,684 ns means a batch took 172 microseconds,
+which is more likely an operating-system pause than the code. The numbers also
+exclude networking, decoding and order encoding, so they are not tick-to-trade.
+
+**Q17. The paper run beats the frictionless run by about 49,000 although it pays
+costs. Is that an execution edge?**
+No. Costs are a drag here (the at-mid P&L is +12,841 and costs and borrow are
+-8,889). The gain comes from filling later than the signal: with no costs at
+all, delaying both legs by 2 bars changes -45,526 to -16,782 and 4 bars gives
++19,743. On this one synthetic path with about 9 trades the rule happens to
+enter early. It was seen after the fact, twenty fill seeds range from -477 to
++3,801, and delay has not been tested on unseen data. It is a warning about
+sensitivity to entry timing.
+
+**Q18. A ledger reconciliation shows a cash break only, no position break.
+What are the likely causes?**
+Positions agree, so the same shares were traded; the money differs. A wrong
+price or commission booked on a fill, or a borrow accrual that differs. A
+missing fill would also cause a position break and a "missing in ledger" break;
+a cash-only break therefore points at prices or fees (COOKBOOK recipe 20, case 3,
+a price booked 0.05 high on 1,000 shares gives a 50-dollar cash break).
 
 ---
 

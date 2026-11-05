@@ -18,6 +18,7 @@ how correctness is enforced across languages.
 | `kalman` | (αₜ, βₜ) random-walk filter, Joseph-form update, innovation z-scores; `KalmanStep` is the one-tick form the batch filter loops over | — |
 | `backtest` | `BacktestConfig` validation (including dead-window rejection), FLAT/LONG/SHORT state machine, sizing modes, P&L stop / max-hold / cool-down, cost accounting, pinned metrics, `walk_forward` (single holdout) and `rolling_walk_forward` | `ols`, `signals` |
 | `data_io` | Minimal CSV/JSON loaders with validation: finite cells, no ragged rows, unique headers, strictly increasing `day` column, strict number grammar, no trailing JSON content (keeps the package numpy-only / dependency-light) | — |
+| `trading` (Python only, paper only) | `orders` (order state machine), `broker` (`Broker` interface, `PaperBroker` fill model), `execution` (`PairExecutor`: two-leg pacing, unwind), `risk` (`RiskEngine`: pre-trade limits, kill switch), `ledger` (independent books, reconciliation, attribution, `AuditLog`), `runner` (`run_paper` day loop). No network code, no credentials, no live-order path; a live adapter is an owner decision. Not ported, not in the goldens | `backtest` (rule parameters), `signals` |
 | `research` (Python only) | Block-bootstrap Sharpe interval, probabilistic and deflated Sharpe, cost sensitivity, CUSUM break test, Benjamini–Hochberg, Kalman grid-MLE with innovation diagnostics, `scan_pairs`. Not ported, not in the goldens, not on the trading path | `backtest`, `kalman`, `engle_granger` |
 
 The dependency graph is a shallow DAG — everything statistical funnels
@@ -439,7 +440,7 @@ Four layers, mirrored in every language:
 
 Python additionally cross-checks OLS, ADF critical values and Johansen
 against statsmodels — in tests and `generate_data.py` only; the shipped
-package depends on numpy alone. Counts at this release: Python 1113, C++
+package depends on numpy alone. Counts at this release: Python 1248, C++
 107, Rust 115, Java 109 tests, all passing.
 
 **Continuous integration** (`.github/workflows/ci.yml`, new in v1.2.0): on
@@ -479,12 +480,171 @@ micro-optimisation everywhere; still, the shapes are worth recording:
   T·W ≈ 90k multiply-adds the batch loop is instantaneous.
 - `backtest_pair`: single O(T) pass; the dominant cost is the z-score.
 
-None of this is a latency claim. There are no benchmarks, the batch code
-allocates freely (`Vec<Vec<f64>>`, `double[][]`, allocating Jacobi rotations),
-and there is no book, feed or order layer. `KalmanStep.update` and
+None of this is a tick-to-trade claim. The batch code allocates freely
+(`Vec<Vec<f64>>`, `double[][]`), and there is no book or feed. `KalmanStep.update` and
 `RollingZ.update` allocate nothing, which is the property a tick-level
-consumer would need, but no p50/p99 figures exist.
+consumer would need. Since v1.2.1 there are harnesses, `rust/src/bin/bench.rs`
+and `java/.../Bench.java`, that time those two updates in batches of 64 and
+report percentiles of the batch averages (median of three runs on one noisy
+Windows machine, not JMH; `max` is operating-system jitter):
+
+| ns per update | p50 | p99 | p99.9 | max |
+|---|---:|---:|---:|---:|
+| Rust `RollingZ` | 6.2 | 25.0 | 45.3 | 2684 |
+| Rust `KalmanStep` | 17.2 | 29.7 | 232.8 | 2137 |
+| Java `RollingZ` | 14.1 | 29.7 | 182.8 | 2477 |
+| Java `KalmanStep` | 31.3 | 50.0 | 268.8 | 3155 |
+
+Throughput on the bundled pair: Rust rolling z-score 21.9M bars/s and backtest
+13.6M; Java 10.47M and 7.37M observations/s. Jacobi rotations in Rust and
+Java update only rows and columns p and q in place (same operands, same order,
+bit-identical). Not done: Java flat matrices and removing the boxed `Map` from
+results, because both change public API; Rust OLS is unchanged because it is
+at most 4x4. Reading the table is covered in LEARN.md section 10c.
 
 Memory: everything is O(T) vectors; the largest allocation is the handful of
 1500-length paths in the backtest result. No parallelism is used or needed;
 determinism would forbid reduction reordering anyway.
+
+## 9. Trading layer (Python only, paper only)
+
+`statarb.trading` sits outside the four-language contract: it is not in
+`API_SPEC.md`, not ported, and not covered by goldens. It has no network code,
+holds no credentials and has no live-order path. `Broker` is the seam a real
+adapter could implement; writing one is an owner decision. The layer exists to
+show what sits between a signal and a P&L number: whole shares, partial fills,
+spread and impact, leg risk, pre-trade limits, an independent ledger and an
+audit trail.
+
+Assumptions to keep in view: ADV and every cost are assumed (the CSV has no
+volume); limits are checked at decision prices, so a later price move can take
+exposure past one without a trade; one pair at a time.
+
+**Order lifecycle** (`orders.py`; source `diagrams/order_lifecycle.mmd`). Any
+move not drawn raises `IllegalTransition`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> NEW : submit
+    NEW --> PARTIAL : fill of part of qty
+    NEW --> FILLED : fill of all qty
+    NEW --> CANCELLED : cancel
+    NEW --> REJECTED : broker refuses, e.g. BORROW_UNAVAILABLE
+    PARTIAL --> PARTIAL : another partial fill
+    PARTIAL --> FILLED : last shares fill
+    PARTIAL --> CANCELLED : cancel keeps filled_qty
+    FILLED --> [*]
+    CANCELLED --> [*]
+    REJECTED --> [*]
+    note right of PARTIAL : Any other move raises IllegalTransition.\nA cancel on a finished order changes nothing.\nResending a client id returns the original order.
+```
+
+**Paper flow** (`runner.py`; source `diagrams/paper_flow.mmd`). Per bar: borrow
+accrues and the broker matches orders, the ledger books the fills and
+reconciles against the broker, equity feeds the drawdown check, then the
+signal runs. A reconciliation break trips the kill switch.
+
+```mermaid
+flowchart LR
+    BAR["bar t: mid, adv, prev_close\nper symbol (Quote)"] --> SIG["RollingZ on the spread\nrule from BacktestConfig"]
+    SIG -- "enter or exit at the close" --> EX["PairExecutor\nsizes child orders, paces the two legs"]
+    EX -- "each child order" --> RK["RiskEngine.check\nreducing orders always pass"]
+    RK -- "approved" --> BR["Broker.submit\nPaperBroker: next-bar fill,\nspread, impact, participation cap"]
+    RK -- "rejected, reasons logged" --> EX
+    BR -- "fills on a later bar" --> LG["Ledger.ingest\nindependent positions, cash, P&L"]
+    LG --> REC["reconcile against broker\nbreak trips the kill switch"]
+    LG --> EQ["equity -> RiskEngine.on_equity\ndrawdown latches the kill switch"]
+    EQ -. "killed: flatten, no new risk" .-> EX
+    SIG -. "signal event" .-> AUD[("AuditLog\nappend-only JSONL")]
+    RK -. "risk_decision" .-> AUD
+    LG -. "fill, reconciliation_break" .-> AUD
+    NOTE["Paper only: no network code,\nno credentials, no live order path"]:::note
+    classDef note fill:#fff8ec,stroke:#999,color:#333
+```
+
+**Pair entry and leg risk** (`execution.py`; source
+`diagrams/pair_entry_leg_risk.mmd`). A leg may have at most
+`ceil((m + b) x target)` shares sent, where `m` is the progress of the slower
+leg and `b` is `max_imbalance_frac`. A leading leg therefore cannot run more
+than `b` ahead, whatever the fill model does. After `timeout_bars` or a rejected
+child the entry is cancelled and unwound with the same pacing. Exits and
+unwinds never give up.
+
+```mermaid
+sequenceDiagram
+    participant S as Signal
+    participant E as PairExecutor
+    participant R as RiskEngine
+    participant B as PaperBroker
+    S->>E: enter(target y -3097, x +5077)
+    Note over E: slowest leg progress m = 0, bound b = 0.5\nsend up to ceil((m + b) x target) per leg
+    E->>R: check y sell 1549, then x buy 2539
+    R-->>E: approved both
+    E->>B: submit both children
+    B-->>E: bar t+1 y fills 1549, x not yet eligible (latency)
+    B-->>E: bar t+2 x partial fill 1925 of 2539
+    Note over E: progress y 0.50, x 0.38\nslowest m = 0.38, so allowed = ceil(0.88 x target)
+    E->>R: check y sell 1174, x buy 1925
+    R-->>E: approved
+    E->>B: submit second children
+    B-->>E: more partial fills each bar
+    alt both legs reach 100 percent
+        E-->>S: outcome FILLED
+    else timeout_bars passed or a child rejected
+        E->>B: cancel open children
+        Note over E: UNWIND back to the start, paced the same way\nimbalance vs original target stays under 2b plus rounding
+        E->>R: check reducing orders, always approved
+        E->>B: submit unwind children
+        B-->>E: filled, retried each bar until done
+        E-->>S: outcome UNWOUND
+    end
+    Note over E,B: exit and unwind never give up:\na rejected child is retried on the next bar
+```
+
+**Risk** (`risk.py`). Exposure is measured at the worst case: position plus
+every open order on the same side plus the new order, at the current mid. A
+*reducing* order, one that can only move a position toward zero and cannot cross
+it, always passes and is still logged, so risk can come off under the kill
+switch, in a restricted name or on bad data. The drawdown switch latches and is
+cleared only by `reset_kill_switch`, which needs an operator and a note.
+
+**Ledger** (`ledger.py`). It rebuilds cash and positions from fills and its own
+borrow accrual, so reconciling against the broker compares two separate
+calculations. Identity at any mark: equity = initial + spread P&L at mid
+- half-spread - impact - commission - borrow.
+
+## 10. Research protocol and studies (outside the contract)
+
+Source diagrams: `diagrams/research_protocol.mmd` and
+`diagrams/sector_residual_pipeline.mmd`.
+
+```mermaid
+flowchart TD
+    Q["Question and rule written down\nparameters round and fixed"] --> PR["PREREGISTRATION.md committed\nbefore any data is downloaded\ngit history is the timestamp"]
+    PR --> DEV["Development period run\nfor pipeline bugs only\nparameters may not change"]
+    DEV -- "bug found" --> FIX["fix code, record as deviation"]
+    FIX --> DEV
+    DEV -- "pipeline sound" --> HO["Holdout run ONCE\nno change since the development run"]
+    HO --> GATES{"All pass gates met?\nSharpe, PSR, bootstrap CI,\ndrawdown, beta, capacity,\ndeflated Sharpe if trials > 1"}
+    GATES -- "yes" --> WEAK["Report a pass as weak evidence\nsurvivor universe: needs point-in-time data"]
+    GATES -- "no" --> NULL["Report a null, no tuning\nany variant is a NEW study\nwith a new preregistration"]
+    NULL --> NEXT["Next study discloses this trial\ndeflated Sharpe counts it"]
+```
+
+The sector-residual signal, fixed in its preregistration:
+
+```mermaid
+flowchart TD
+    PX["Daily adjusted closes\n63 stocks in 8 sector groups + 8 sector ETFs"] --> RET["Simple returns, last 60 days"]
+    RET --> OLS["OLS: stock on its sector ETF\nbeta and residuals"]
+    OLS --> X["X = cumulative sum of residuals"]
+    X --> AR["AR(1) on X: X_k = a + b X_(k-1) + e"]
+    AR --> EL{"0 < b < 1 and\nhalf-life <= 30 days?"}
+    EL -- "no" --> NONE["ineligible: opens nothing,\nclose if open"]
+    EL -- "yes" --> S["s = (X_t - m) / sigma\nm = a/(1-b), sigma = sd(e)/sqrt(1-b^2)"]
+    S --> RULE{"flat: |s| >= 1.25 opens\nopen: |s| <= 0.5, 20 days,\nor ineligible exits"}
+    RULE --> EXE["Signal at close t,\nexecute at close t+1"]
+    EXE --> POS["One unit of stock hedged with\n-beta units of the sector ETF\nbeta fixed at entry"]
+    POS --> PNL["Daily P&L = dir x (r_stock - beta x r_etf)\ncosts 5 bps stock, 2 bps ETF, borrow 1% a year"]
+    PNL --> GATE["Holdout gates, run once\nresult: null, net Sharpe -0.32"]
+```

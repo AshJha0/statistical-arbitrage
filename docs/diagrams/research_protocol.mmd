@@ -1,0 +1,10 @@
+flowchart TD
+    Q["Question and rule written down\nparameters round and fixed"] --> PR["PREREGISTRATION.md committed\nbefore any data is downloaded\ngit history is the timestamp"]
+    PR --> DEV["Development period run\nfor pipeline bugs only\nparameters may not change"]
+    DEV -- "bug found" --> FIX["fix code, record as deviation"]
+    FIX --> DEV
+    DEV -- "pipeline sound" --> HO["Holdout run ONCE\nno change since the development run"]
+    HO --> GATES{"All pass gates met?\nSharpe, PSR, bootstrap CI,\ndrawdown, beta, capacity,\ndeflated Sharpe if trials > 1"}
+    GATES -- "yes" --> WEAK["Report a pass as weak evidence\nsurvivor universe: needs point-in-time data"]
+    GATES -- "no" --> NULL["Report a null, no tuning\nany variant is a NEW study\nwith a new preregistration"]
+    NULL --> NEXT["Next study discloses this trial\ndeflated Sharpe counts it"]

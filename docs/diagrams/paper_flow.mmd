@@ -1,0 +1,15 @@
+flowchart LR
+    BAR["bar t: mid, adv, prev_close\nper symbol (Quote)"] --> SIG["RollingZ on the spread\nrule from BacktestConfig"]
+    SIG -- "enter or exit at the close" --> EX["PairExecutor\nsizes child orders, paces the two legs"]
+    EX -- "each child order" --> RK["RiskEngine.check\nreducing orders always pass"]
+    RK -- "approved" --> BR["Broker.submit\nPaperBroker: next-bar fill,\nspread, impact, participation cap"]
+    RK -- "rejected, reasons logged" --> EX
+    BR -- "fills on a later bar" --> LG["Ledger.ingest\nindependent positions, cash, P&L"]
+    LG --> REC["reconcile against broker\nbreak trips the kill switch"]
+    LG --> EQ["equity -> RiskEngine.on_equity\ndrawdown latches the kill switch"]
+    EQ -. "killed: flatten, no new risk" .-> EX
+    SIG -. "signal event" .-> AUD[("AuditLog\nappend-only JSONL")]
+    RK -. "risk_decision" .-> AUD
+    LG -. "fill, reconciliation_break" .-> AUD
+    NOTE["Paper only: no network code,\nno credentials, no live order path"]:::note
+    classDef note fill:#fff8ec,stroke:#999,color:#333
