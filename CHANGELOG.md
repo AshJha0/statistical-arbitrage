@@ -7,6 +7,7 @@ generated data and are not evidence of edge. The review behind v1.2.0 is
 
 ## Unreleased
 
+- Sector-residual reversal study, preregistered: null result (holdout net Sharpe -0.32). See `research/sector_residual_2026_11/RESULTS.md`.
 - Real-data pairs study, preregistered: null result (holdout net Sharpe -0.42). See `research/real_data_2026_11/RESULTS.md`.
 - CI: action versions updated, runner pinned to ubuntu-24.04.
 
