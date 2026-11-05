@@ -7,6 +7,12 @@ Johansen-lite, Kalman dynamic hedge, dollar-neutral pairs backtest) is specified
 down to the solver so that all four languages agree to tight tolerances,
 enforced by a shared golden-value suite.
 
+**Status (v1.2.0).** A teaching and research-infrastructure library on
+synthetic data. It is not a trading system and nothing in it is evidence of
+edge; see [Limitations and what this is not](#limitations-and-what-this-is-not)
+before reading any number below. Changes since v1.1.0 are in
+[`CHANGELOG.md`](CHANGELOG.md).
+
 The package name is `statarb` everywhere: Python package `statarb`, C++
 namespace `statarb`, Rust crate `statarb`, Java package `com.quant.statarb`.
 
@@ -15,19 +21,76 @@ namespace `statarb`, Rust crate `statarb`, Java package `com.quant.statarb`.
 | Feature | Notes |
 |---|---|
 | OLS regression | Normal equations + LU solve (pinned), plain SEs, t-stats, R² |
-| ADF unit-root test | Fixed lag (default 1), constant/no-trend, MacKinnon (2010) finite-sample critical values `b_inf + b1/T + b2/T² + b3/T³` at the regression sample size (T_eff ≥ 20 enforced), interpolated approximate p-value |
+| ADF unit-root test | Fixed lag (default 1) or BIC-selected lag (`select_lag`), constant/no-trend, MacKinnon (2010) finite-sample critical values `b_inf + b1/T + b2/T² + b3/T³` at the regression sample size (T_eff ≥ 20 enforced), interpolated approximate p-value |
 | Half-life of mean reversion | AR(1) fit on the spread, `hl = -ln 2 / ln(1+ρ)` with guards |
-| Engle–Granger two-step | Hedge OLS then residual ADF against the 2- or 3-variable EG table |
+| Engle–Granger two-step | Hedge OLS then residual ADF against the 2- or 3-variable EG table; `engle_granger_both` runs both normalisations (y on x, x on y) and calls a pair cointegrated only if both reject |
 | Johansen-lite trace test | 2–3 assets, VECM with unrestricted constant, k = 1 lagged difference, native Cholesky + cyclic Jacobi eigensolver, Osterwald–Lenum 95% table |
 | Kalman dynamic hedge | Random-walk state (αₜ, βₜ), RiskMetrics-style `Q = δ/(1−δ)·I`, Joseph-form covariance update, innovation z-scores |
-| Rolling z-score signal | Current-observation-inclusive window, ddof = 1, zero-variance guard |
-| Pairs backtest | FLAT/LONG/SHORT state machine, next-close execution (no look-ahead), equal-dollar legs, bps costs + slippage, stop-losses; a pending entry at the end of data is discarded, never force-closed the same day |
-| Walk-forward split | Hedge estimated in-sample (60%), traded out-of-sample (40%) — degradation shown honestly |
-| Teaching cases | Regime break at day 1050 (Kalman adapts, static OLS cannot), spurious regression on independent random walks (no trade) |
-| Input validation | Every public entry point rejects NaN/inf, length mismatches, empty/constant/collinear inputs and out-of-domain parameters with the language's error type (`ValueError` / `std::invalid_argument` / `Err(StatarbError)` / `IllegalArgumentException`); the CSV loader refuses non-finite cells and a non-monotone `day` column |
+| Rolling z-score signal | Current-observation-inclusive window, ddof = 1, zero-variance guard; plain left-to-right sums, pinned in every port. Configs where the window cannot reach `entry_z` (or `stop_z` with no P&L stop) are rejected |
+| Streaming API | `RollingZ(window)` and `KalmanStep(delta, r)`: O(1) per update, no allocation in `update`. `KalmanStep` matches the batch filter to 1e-12; `RollingZ` uses running sums and matches batch to 1e-9 (it drifts about 5e-8 after 50,000 updates at a level of 1e4), so batch stays the trading reference |
+| Pairs backtest | FLAT/LONG/SHORT state machine, next-close execution (no look-ahead), bps costs + slippage, z-stop; a pending entry at the end of data is discarded, never force-closed the same day. Rejects `beta <= 0` |
+| Sizing | `sizing = "beta_hedged"` (default): legs held in the hedge ratio, so P&L tracks the spread; gross notional equals `capital` at entry. `"equal_dollar"` is the v1.1.0 rule (`capital/2` per leg) |
+| Risk limits | `pnl_stop_frac` (stop when open P&L <= -frac x capital), `max_hold_days`, `cooldown_days` after a stopped exit. All default to 0 (off). `data/config.json` turns them on at 0.02 / 60 / 20: round numbers fixed in advance, not tuned |
+| Single holdout | `walk_forward`: ONE fit on the first 60%, ONE trade of the last 40%. The name is kept for compatibility; it is a holdout, not a rolling procedure |
+| Rolling walk-forward | `rolling_walk_forward(y, x, config, train, test)`: refit every `test` days on the last `train` days, trade the next block with history-only warm-up, flat at each block end, stitched equity. A block whose fit has `beta <= 0` stays flat and is flagged `skipped` |
+| Research helpers (Python only) | `statarb.research`: block-bootstrap Sharpe interval, probabilistic and deflated Sharpe, cost sensitivity, CUSUM break test, Benjamini–Hochberg, Kalman grid-MLE with innovation diagnostics, `scan_pairs`. Not ported, not in the goldens, not on the trading path |
+| Teaching cases | Regime break at day 1050 (Kalman tracks beta; static OLS cannot; neither is shown to make money across the break), spurious regression on independent random walks (no trade) |
+| Input validation | Every public entry point rejects NaN/inf, length mismatches, empty/constant/collinear inputs and out-of-domain parameters with the language's error type (`ValueError` / `std::invalid_argument` / `Err(StatarbError)` / `IllegalArgumentException`); the loaders refuse non-finite cells, a non-monotone `day` column, trailing JSON content, hex, `_` and type suffixes, and non-integer `window`/day fields |
 
 Everything is deterministic: no RNG at runtime (randomness lives only in
 `data/generate_data.py`, fixed seeds).
+
+## Limitations and what this is not
+
+Read this before the numbers.
+
+- **No real data.** The three CSVs come from `data/generate_data.py`, and the
+  pair's generator is the model the tests assume. Over 300 seeds with no
+  break, the out-of-sample Sharpe is 1.44; that recovers the generator and is
+  not evidence of anything (review C1, `review/2026-11-05/REVIEW.md`).
+- **Not tradable as it stands.** Fractional quantities, both legs filled at
+  one close, a flat 1.5 bps per side, no borrow, financing, impact, capacity
+  or locate check, no restricted lists or corporate actions, no portfolio or
+  sector limits, no broker adapter or reconciliation. One pair at a time.
+- **Not low latency.** The batch functions are O(T x W) for the z-score and
+  allocate freely. The streaming API (`RollingZ`, `KalmanStep`) is O(1) per
+  update, but there are no benchmarks and no book, feed or order layer.
+- **Not a research pipeline.** `statarb.research` gives a bootstrap interval,
+  deflated Sharpe, a break test and a multiple-testing-aware scan, in Python
+  only. There is still no universe, no survivorship handling and no
+  preregistered holdout. In the v1.1.0 review, 32 of 780 independent
+  random-walk pairs passed Engle–Granger on one window; their mean in-sample
+  Sharpe was 0.76 and out-of-sample -0.16 (C2).
+- **The Kalman filter is never traded by the library, and trading it did not
+  work.** "Kalman adapts" is true of beta tracking only (RMSE 0.024 vs 0.288
+  for static OLS). In the review, trading the filtered spread on days
+  150–1049 gave Sharpe 0.05 (35 trades), against 1.49 for an estimated static
+  hedge on a different window (in-sample days 0–899) and 1.72 with the true
+  beta. One seed. The cause measured: `r = 1e-3` is about 2,800 times below
+  the spread variance (2.82), so beta absorbs part of the signal (C3).
+- **Stops do not cap the damage.** The z-stop alone did not: it cost $17k on
+  day 1053, and re-entry on day 1059 lost $124k, more than the whole net loss,
+  because the rolling mean follows the break and z decays (C4). With the P&L
+  stop, max-hold and cool-down on, the single-holdout out-of-sample result is
+  -4.91% with max drawdown 6.86%, against -12.35% and 15.28% with none
+  (demo, section 3). That is a smaller loss, still a loss. Across 300 seeds
+  with the break the out-of-sample Sharpe was -1.9, negative 99.7% of the
+  time (measured before the limits existed; not re-measured with them).
+- **`walk_forward` is a single holdout.** `rolling_walk_forward` is the
+  rolling version. Its bundled result (return -0.29%, Sharpe -0.05, 95%
+  block-bootstrap interval [-1.11, 1.45]) is flattered: the last three of the 10 blocks (indices
+  7–9) fit `beta <= 0` and sat flat. Fewer trades, not better trades.
+- **Round risk limits, not tuned.** 2% / 60 days / 20 days were fixed before
+  looking at the out-of-sample window. They have not been validated on any
+  other data.
+- **Economics, synthetic.** From `review/2026-11-05/experiments/exp4_economics.py`:
+  300 seeds of this repo's generator at best-case parameters. No-break, zero
+  cost: 1.70% a year on gross notional, 5.1 round trips a year, in the market
+  23% of days. Break-even cost 16.7 bps a side; net 1.55% at 1.5 bps, 0.69%
+  at 10. A break window averages -12.6% (5th percentile -18.2%), so break-even
+  is one break per about 10.5 years per pair; the profile is a small steady
+  gain with a rare large loss. These describe the generator, not any market.
+  No real-market profit has been measured.
 
 ## Directory layout
 
@@ -36,22 +99,26 @@ statistical-arbitrage/
   README.md               this file
   LEARN.md                theory: unit roots, cointegration, Kalman, pairs practice
   COOKBOOK.md             task-oriented recipes in all four languages
+  CHANGELOG.md            what changed per release
   API_SPEC.md             the pinned cross-language numerical contract
   docs/
     ARCHITECTURE.md       component design, data flow, numerical decisions
     GITHUB_PAGES.md       publishing guide for the docs site: https://ashjha0.github.io/statistical-arbitrage/
+    index.html            the project site
     diagrams/*.mmd        raw Mermaid sources
   data/
     pair_equity.csv       1500 days, cointegrated pair (true beta 1.7, break at day 1050)
     fx_triangle.csv       EURUSD vs GBPUSD*EURGBP basket (cointegration in logs)
     random_walks.csv      two independent walks — the spurious-regression case
-    config.json           signal/cost parameters shared by all demos
+    config.json           signal, cost and risk-limit parameters shared by all demos
     generate_data.py      regenerates everything (fixed seeds; cross-checks vs statsmodels)
-    golden/golden.json    24 golden cases every language must reproduce
-  python/                 reference implementation (numpy only in the package)
+    golden/golden.json    928 golden cases every language must reproduce
+  .github/workflows/      CI for all four languages plus a data-regeneration check
+  python/                 reference implementation (numpy only in the package;
+                          research.py holds the Python-only research helpers)
   cpp/                    C++17 library + GoogleTest suite + demo
   rust/                   Rust library + integration tests + demo binary
-  java/                   Java 21 sources + JUnit 4 tests + demo
+  java/                   Java 21 sources + JUnit 4 tests + demo (Maven pom.xml or plain javac)
 ```
 
 ## Build, run, test
@@ -59,22 +126,32 @@ statistical-arbitrage/
 The `.sh` helpers are invoked with `bash` below so they work on a fresh
 clone regardless of file modes.
 
-### Python (3.11; numpy required, pytest + statsmodels only for the tests)
+CI (`.github/workflows/ci.yml`) runs on every push to `main` and every pull
+request: Python 3.11 and 3.12 with ruff, mypy and pytest; C++ with g++ and
+clang++, plus an ASan/UBSan build; Rust with `cargo fmt --check`, clippy at
+`-D warnings` and the tests; Java with Maven; and a job that regenerates
+`data/` and fails if it differs from the committed files. Passing locally
+does not replace it.
+
+### Python (3.11+; numpy required, pytest + statsmodels only for the tests)
 
 ```bash
 cd python
 pip install -r requirements.txt         # numpy; pytest + statsmodels for tests
 PYTHONPATH=src python3 demo.py          # run the demo
-PYTHONPATH=src python3 -m pytest -q     # run the tests (86 pass)
+PYTHONPATH=src python3 -m pytest -q     # run the tests (1113 pass; the golden cases are most of them)
+ruff check . && mypy src/statarb        # lint and types, as CI does
 ```
 
-### C++ (g++ 13, CMake ≥ 3.16, GoogleTest via `find_package(GTest)`)
+### C++ (g++ 13 or clang++, CMake ≥ 3.16; GoogleTest from the system if found, else fetched v1.14.0)
 
 ```bash
 cd cpp
-bash build.sh                           # = cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
+bash build.sh                           # = cmake -S . -B build && cmake --build build -j2 (Release is the default build type)
 ./build/statarb_demo                    # run the demo (from cpp/, reads ../data)
-ctest --test-dir build --output-on-failure   # run the tests (63 pass)
+ctest --test-dir build --output-on-failure   # run the tests (107 pass)
+# sanitizers: cmake -S . -B build -DSTATARB_SANITIZE=ON   (ASan + UBSan)
+# the build uses -ffp-contract=off so a*b+c is never fused, which cross-language agreement needs
 ```
 
 ### Rust (1.95, edition 2021; only dependency `serde_json` for the config loader)
@@ -82,19 +159,24 @@ ctest --test-dir build --output-on-failure   # run the tests (63 pass)
 ```bash
 cd rust
 cargo run --bin demo --release          # run the demo
-cargo test --release                    # run the tests (74 pass; `cargo build --release` is warning-free)
+cargo test --release                    # run the tests (115 pass; `cargo build --release` is warning-free)
+cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings   # as CI does
 ```
 
-### Java (21; JUnit 4 at /usr/share/java/junit4.jar and Hamcrest at /usr/share/java/hamcrest.jar; no Maven/Gradle)
+### Java (21; Maven, or plain javac with JUnit 4 and Hamcrest jars)
 
 ```bash
 cd java
-bash build.sh                           # javac -Xlint:all -Werror everything into out/
+bash build.sh                           # javac -Xlint:all -Werror --release 21 into out/ (tests only if the jars are found)
 bash demo.sh                            # run the demo main
-bash test.sh                            # JUnitCore on all *Test classes (65 pass)
+bash test.sh                            # `mvn -B -q test` if Maven is installed, else JUnitCore (109 pass)
+# without Maven, set JUNIT_JAR and HAMCREST_JAR (or JUNIT_HOME) if they are not in /usr/share/java or ~/.m2
 ```
 
-## Demo output (Python reference, truncated)
+## Demo output (Python reference)
+
+Real output of `PYTHONPATH=src python demo.py` in `python/`. The data is
+synthetic.
 
 ```
 statarb demo — cointegration, Kalman hedging, pairs backtest
@@ -114,17 +196,30 @@ pair_equity.csv: 1500 days, in-sample = first 900 days (true beta 1.7, break at 
   day    true beta   kalman beta   static OLS beta
     250      1.700       1.6650         1.5178
     500      1.700       1.6921         1.5178
+    900      1.700       1.6690         1.5178
    1049      1.700       1.7161         1.5178
+   1100      1.100       1.1469         1.5178
    1200      1.100       1.1001         1.5178
    1499      1.100       1.1532         1.5178
-  beta tracking RMSE (day 300+): kalman 0.0237 vs static OLS 0.2879 -> kalman adapts, OLS cannot
+  beta tracking RMSE (day 300+): kalman 0.0237 vs static OLS 0.2879
+  (beta tracking only: the library never trades the Kalman hedge, and a
+   traded Kalman lost most of the pre-break edge in the review, one seed)
 
-=== 3. Pairs backtest — in-sample vs walk-forward out-of-sample =======
-  hedge estimated on days 0..899: alpha 17.3603, beta 1.6389
-  in-sample    ret    7.20%  ann    1.97%  sharpe   1.49  maxDD  0.91%  trades  21  win 90.5%  hold   9.8d  turn  41.9x  stops 1
-  OOS (40%)    ret  -10.30%  ann   -4.46%  sharpe  -1.37  maxDD 15.44%  trades   9  win 55.6%  hold  24.2d  turn  17.9x  stops 1
-  degradation is honest: the OOS window contains the day-1050
-  break; stop-losses cap the damage of the broken relationship.
+=== 3. Pairs backtest: holdout, rolling walk-forward, risk limits =====
+  risk limits: P&L stop 2% of capital, max hold 60d, cool-down 20d
+  (round numbers fixed in advance, not tuned on this data)
+  single holdout, hedge from days 0..899: alpha 17.3603, beta 1.6389
+  in-sample    ret    6.81%  ann    1.86%  sharpe   1.40  maxDD  0.87%  trades  19  win 89.5%  hold  10.2d  turn  37.9x  stops 1
+  OOS limits   ret   -4.91%  ann   -2.09%  sharpe  -0.78  maxDD  6.86%  trades   9  win 55.6%  hold  15.4d  turn  18.0x  stops 3
+  OOS none     ret  -12.35%  ann   -5.39%  sharpe  -1.54  maxDD 15.28%  trades   9  win 55.6%  hold  24.2d  turn  17.9x  stops 1
+  rolling walk-forward, refit every 100d on the last 500d (10 blocks, days 500+):
+  roll limits  ret   -0.29%  ann   -0.07%  sharpe  -0.05  maxDD  5.55%  trades  15  win 73.3%  hold  10.1d  turn  29.9x  stops 2
+  roll none    ret   -8.33%  ann   -2.17%  sharpe  -1.04  maxDD 13.25%  trades  15  win 73.3%  hold  12.5d  turn  29.8x  stops 1
+  rolling Sharpe -0.05, 95% block-bootstrap interval [-1.11, 1.45]; P(true Sharpe > 0) = 0.46
+  CUSUM on the spread: in-sample p = 0.149, full sample p = 0.012, largest shift near day 1057
+  limits shrink the OOS loss but it is still a loss. The last three rolling blocks fit
+  beta <= 0 and stayed flat, which flatters that result. The data is synthetic:
+  none of this is evidence of edge.
 
 === 4. Spurious-regression teaching case (independent random walks) ===
   regressing walk_a on walk_b: slope t-stat = 8.4 —
@@ -136,14 +231,26 @@ pair_equity.csv: 1500 days, in-sample = first 900 days (true beta 1.7, break at 
 demo complete.
 ```
 
+Section 3 is the point. In-sample Sharpe 1.40 is on the sample that chose the
+hedge. Out of sample, the P&L stop, max-hold and cool-down cut the loss from
+-12.35% to -4.91% and the drawdown from 15.28% to 6.86%; it is still a loss.
+The rolling result looks near break-even partly because the last three blocks sat flat.
+
 ## Golden-value cross-language testing
 
-`data/golden/golden.json` holds 24 named cases — OLS coefficients and R² on the
+`data/golden/golden.json` holds 928 named cases (the count follows the trade lists) — OLS coefficients and R² on the
 bundled pair, ADF t-stats (residuals and random walk) together with their
 MacKinnon (2010) finite-sample 5% critical values and an interpolated p-value,
 Engle–Granger verdicts, Johansen trace statistics and rank, half-life, filtered
-Kalman betas at pinned days, rolling z-scores at pinned days, and full backtest
-metrics (total return, Sharpe, max drawdown, exact trade count of 31). Each
+Kalman betas and z-scores at pinned days, rolling z-scores at pinned days,
+`select_lag`, ADF with `nvars = 3`, half-life sentinels, and backtests in both
+sizing modes and with the risk limits on: metrics, equity at pinned days and
+the trade list (entry, exit, direction, P&L, stopped), plus `walk_forward` and
+`rolling_walk_forward` metrics. The full-sample backtest on the bundled pair
+with `config.json` has 29 trades, return 3.70%, Sharpe 0.30, max drawdown
+6.32%. One case records the smallest margin between a z-score and a threshold
+(a last-bit difference in a port could flip a trade only if that margin were
+tiny); the tests assert it exceeds 1e-6. Each
 case records its inputs, one expected scalar, and an absolute tolerance (1e-6
 to 1e-10; booleans encoded as 0.0/1.0, integers matched exactly). Every
 language's golden suite asserts the exact case count.
@@ -157,10 +264,11 @@ coefficients/SEs, ADF t-stats and `mackinnoncrit` critical values,
 `coint_johansen` eigenvalues and trace statistics) and an independent numpy
 generalised-eigenproblem solve, and refuses to write on any disagreement.
 
-Test counts (all passing, verified on Linux x86-64 with the toolchain above):
-Python 86, C++ 63, Rust 74, Java 65. Beyond the golden layer every port
-carries the same behavioural suite: accounting identity, exact dollar
-neutrality at entry, next-close execution, the end-of-data discard rule on
+Test counts (all passing): Python 1113 (run on Windows for this release; CI
+runs 3.11 and 3.12 on Linux), C++ 107, Rust 115, Java
+109. Beyond the golden layer every port
+carries the same behavioural suite: accounting identity, gross notional equal
+to `capital` at entry, next-close execution, the end-of-data discard rule on
 hand-built spreads with closed-form z-scores, every-truncation
 "no zero-day trade" property check on the bundled pair, stop/re-entry
 timing, negative-equity metrics, NaN/inf parameter rejection, walk-forward
@@ -177,13 +285,19 @@ What a practitioner gets, precisely:
   the Kalman `r` and the prior `P₀ = 1e3·I` are all in those units — `r` is a
   price-unit variance, not a fraction, and `P₀ = 1e3` is not diffuse for
   four-digit prices (the first ~50 filtered betas are prior-dominated). Costs
-  are basis points of traded notional; `capital` is gross notional and every
-  leg is sized to `capital/2` at each entry regardless of accumulated P&L
-  (returns are on notional, not compounded on equity; no leverage cap, no
-  borrow/financing on the short leg).
+  are basis points of traded notional; `capital` is gross notional at each
+  entry regardless of accumulated P&L (returns are on notional, not
+  compounded on equity; no leverage cap, no borrow/financing on the short
+  leg). With the default `beta_hedged` sizing the legs are held in the ratio
+  `1 : beta` by quantity, so gross is `capital` but the position is not
+  dollar-neutral; `equal_dollar` is neutral at entry but carries a net
+  exposure whenever beta differs from y/x (the review measured Sharpe 0.43
+  equal-dollar vs 1.76 beta-hedged on `y = 150 + 0.5x`, 100 seeds).
+  `beta <= 0` is rejected.
 - **Time grid.** One row = one observation, assumed equally spaced; the
   annualisation constant 252 and the next-close execution lag are hard-coded.
-  The loader enforces a strictly increasing `day` column and finite cells but
+  The loader enforces a strictly increasing `day` column, finite cells and a
+  plain decimal/exponent number grammar, but
   does not know about calendars, holidays, corporate actions or intraday bars —
   align, adjust and de-duplicate upstream. Rolling re-runs are safe: a signal
   on the last available close is never executed and force-closed at the same
@@ -196,22 +310,25 @@ What a practitioner gets, precisely:
   small-sample correction. Half-life sentinels `+inf` and `0.0` both mean "do
   not trade this spread".
 - **Stops.** `|z| ≥ stop_z` in position flags a stop regardless of whether the
-  overshoot is adverse or favourable, and re-entry in the same direction is
-  allowed the very next day (no cool-down); a break regime can therefore
-  whipsaw. Treat `stopped` as "model disagreement", not as a P&L stop.
+  overshoot is adverse or favourable. With `cooldown_days = 0` (the library
+  default) re-entry is allowed the very next day, so a break regime can
+  whipsaw; `config.json` sets 20. `pnl_stop_frac` is the actual loss limit
+  and takes priority over the z rules. Treat a z-stop as "model
+  disagreement"; its measured effect is in the limitations above.
 - **What is validated.** Every public entry point checks lengths, finiteness,
   emptiness, constancy/collinearity, parameter domains and window bounds and
   fails with the language's error type; no NaN is ever silently propagated
   into a metric. Config structs are re-validated at run time in C++/Rust.
 - **Deliberately out of scope.** Calendars/day-count, `periods_per_year`,
   intraday data, financing and borrow costs, market impact, position
-  compounding, rolling ADF/half-life diagnostics helpers, automatic lag
-  selection, Johansen deterministic-term variants and p-values, structured
+  compounding, rolling ADF/half-life diagnostics helpers, Johansen
+  deterministic-term variants and p-values, structured
   error codes beyond Rust's enum. These are documented limits, not hidden ones.
 
-This is a verified reference implementation of the pinned algorithms with
-cross-language golden agreement and edge-case tests; it is not a trading
-system, and nothing here is investment advice.
+This is a reference implementation of the pinned algorithms with
+cross-language golden agreement and edge-case tests, plus Python research
+helpers. It is not a trading system, the data is synthetic, and nothing here
+is investment advice.
 
 ## References
 

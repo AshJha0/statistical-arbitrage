@@ -125,7 +125,7 @@ TEST(Backtest, ConfigValidation) {
     EXPECT_THROW(BacktestConfig(60, 2.0, 0.5, 4.0, 1.0, 0.5,
                                 std::numeric_limits<double>::infinity()),
                  std::invalid_argument);  // capital not finite
-    EXPECT_NO_THROW(BacktestConfig(2, 1.0, 0.0, 2.0, 0.0, 0.0, 1.0));
+    EXPECT_NO_THROW(BacktestConfig(60, 1.0, 0.0, 2.0, 0.0, 0.0, 1.0));
 }
 
 TEST(Backtest, ConfigRejectsNonFinite) {
@@ -202,7 +202,7 @@ TEST(Backtest, EndOfDataPendingEntryDiscarded) {
     }
     s[T - 2] = 6.0;
     for (std::size_t t = 0; t < T; ++t) y[t] = 10.0 + x[t] + s[t];
-    const statarb::BacktestConfig cfg(20, 2.0, 0.5, 8.0, 1.0, 0.5, 1e6);
+    const statarb::BacktestConfig cfg(20, 2.0, 0.5, 8.0, 1.0, 0.5, 1e6, "beta_hedged", 0.5);
     const std::vector<double> z = zpath(s, 20);
     ASSERT_LT(max_abs_finite(z, 0, T - 2), 2.0);
     ASSERT_GE(z[T - 2], 2.0);
@@ -238,7 +238,7 @@ TEST(Backtest, StopBandWhileFlatNoEntry) {
     std::vector<double> s(T, 0.0), x(T, 50.0), y(T);
     s[t0] = 7.0;
     for (std::size_t t = 0; t < T; ++t) y[t] = 100.0 + s[t];  // alpha 50, beta 1
-    const statarb::BacktestConfig cfg(static_cast<int>(W), 2.0, 0.5, 4.0, 1.0, 0.5, 1e6);
+    const statarb::BacktestConfig cfg(static_cast<int>(W), 2.0, 0.5, 4.0, 1.0, 0.5, 1e6, "equal_dollar");
     const std::vector<double> z = zpath(s, W);
     EXPECT_NEAR(z[t0], (W - 1) / std::sqrt(static_cast<double>(W)), 1e-12);
     EXPECT_NEAR(z[t0 + 1], -1.0 / std::sqrt(static_cast<double>(W)), 1e-12);
@@ -262,7 +262,7 @@ TEST(Backtest, StopExitIsFlaggedAndExecutesNextDay) {
     s[t0] = s[t0 + 1] = s[t0 + 2] = 0.5;
     s[t0 + 3] = 5.0;
     for (std::size_t t = 0; t < T; ++t) y[t] = 10.0 + x[t] + s[t];
-    const statarb::BacktestConfig cfg(static_cast<int>(W), 2.0, 0.5, 4.0, 1.0, 0.5, 1e6);
+    const statarb::BacktestConfig cfg(static_cast<int>(W), 2.0, 0.5, 4.0, 1.0, 0.5, 1e6, "equal_dollar");
     const std::vector<double> z = zpath(s, W);
     ASSERT_LT(max_abs_finite(z, 0, t0), cfg.entry_z);
     ASSERT_GE(z[t0], cfg.entry_z);
@@ -302,7 +302,7 @@ TEST(Backtest, ReentryAfterExitSameDirection) {
     }
     s[t0] = 0.5; s[t0 + 1] = 0.0; s[t0 + 2] = 0.5; s[t0 + 3] = 0.0;
     for (std::size_t t = 0; t < T; ++t) y[t] = 10.0 + x[t] + s[t];
-    const statarb::BacktestConfig cfg(static_cast<int>(W), 2.0, 0.5, 4.0, 1.0, 0.5, 1e6);
+    const statarb::BacktestConfig cfg(static_cast<int>(W), 2.0, 0.5, 4.0, 1.0, 0.5, 1e6, "equal_dollar");
     const std::vector<double> z = zpath(s, W);
     ASSERT_GE(z[t0], cfg.entry_z);
     ASSERT_LT(z[t0], cfg.stop_z);
@@ -335,7 +335,7 @@ TEST(Backtest, EquityNonPositiveMetricsDefined) {
     for (std::size_t t = t0; t < T; ++t) s[t] = -0.5;      // long-spread entry band
     for (std::size_t t = t0 + 2; t < T; ++t) x[t] = 200.0;  // short leg quadruples
     for (std::size_t t = 0; t < T; ++t) y[t] = 100.0 + s[t];  // alpha 50, beta 1
-    const statarb::BacktestConfig cfg(static_cast<int>(W), 2.0, 0.5, 4.0, 0.0, 0.0, 1e6);
+    const statarb::BacktestConfig cfg(static_cast<int>(W), 2.0, 0.5, 4.0, 0.0, 0.0, 1e6, "equal_dollar");
     const statarb::BacktestResult bt = statarb::backtest_pair(y, x, 50.0, 1.0, cfg);
     ASSERT_EQ(bt.trades.size(), 1u);
     EXPECT_EQ(bt.trades[0].entry_day, static_cast<int>(t0 + 1));
@@ -369,7 +369,7 @@ TEST(Backtest, ComputeMetricsValidation) {
 }
 
 TEST(Backtest, PriceValidation) {
-    const statarb::BacktestConfig cfg(5, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6);
+    const statarb::BacktestConfig cfg(5, 1.5, 0.5, 1.7, 1.0, 0.5, 1e6);
     std::vector<double> good(50);
     for (int i = 0; i < 50; ++i) {
         good[static_cast<std::size_t>(i)] = 10.0 + std::sin(0.3 * i);
@@ -416,14 +416,14 @@ TEST(WalkForward, LengthMismatchIsTypedError) {
 TEST(WalkForward, SplitExact) {
     // Proposed test 8 (MIN-10): floor(T * frac) is the intended integer
     // (700 * 0.7 == 489.99999999999994 in binary floating point).
-    const statarb::BacktestConfig cfg(5, 50.0, 0.5, 60.0, 1.0, 0.5, 1e6);
+    const statarb::BacktestConfig cfg(5, 1.5, 0.5, 1.7, 1.0, 0.5, 1e6);
     const struct { std::size_t T; double frac; std::size_t split; } cases[] = {
         {700, 0.7, 490}, {100, 0.29, 29}, {1500, 0.6, 900}};
     for (const auto& c : cases) {
         std::vector<double> y(c.T), x(c.T);
         for (std::size_t t = 0; t < c.T; ++t) {
-            y[t] = 100.0 + std::sin(0.3 * static_cast<double>(t));
             x[t] = 50.0 + std::cos(0.2 * static_cast<double>(t));
+            y[t] = 100.0 + 0.5 * x[t] + std::sin(0.3 * static_cast<double>(t));
         }
         EXPECT_EQ(statarb::walk_forward(y, x, cfg, c.frac).split, c.split) << c.T;
     }

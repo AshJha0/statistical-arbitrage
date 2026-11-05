@@ -19,7 +19,11 @@ defines `cfg`, and later recipes reuse them. They are compiled and run
 against the real libraries as part of the release check (see the note at
 the end).
 
-All numbers quoted in comments are the golden values for the bundled data.
+All numbers quoted in comments are the golden values for the bundled data,
+or, where a comment says "demo", the Python demo's output. The data is
+synthetic: these recipes show how to call the code, not that a strategy
+works. Recipes 13–15 (streaming, lag selection, research helpers) are
+Python-only except where stated.
 
 ---
 
@@ -367,19 +371,26 @@ trading signal.
 **Python**
 
 ```python
-from statarb import BacktestConfig, backtest_pair, engle_granger, load_csv
+from statarb import (BacktestConfig, backtest_pair, config_from_dict,
+                     engle_granger, load_config, load_csv)
 
 pair = load_csv("../data/pair_equity.csv")
 y, x = pair["stock_y"], pair["stock_x"]
 eg = engle_granger(y[:900], x[:900])                 # in-sample hedge
-cfg = BacktestConfig(window=60, entry_z=2.0, exit_z=0.5, stop_z=4.0,
-                     cost_bps=1.0, slippage_bps=0.5, capital=1e6)
+# config.json turns the risk limits on (P&L stop 2%, max hold 60d, cool-down
+# 20d); BacktestConfig() alone leaves them off. Sizing defaults to "beta_hedged".
+cfg = config_from_dict(load_config("../data/config.json"))
 res = backtest_pair(y, x, eg.alpha, eg.beta, cfg)
 m = res.metrics
 print(f"total {m['total_return']:.4%}  sharpe {m['sharpe']:.3f}  "
       f"maxDD {m['max_drawdown']:.2%}  trades {int(m['n_trades'])}")
-# golden: -1.9113%, -0.137, 14.26%, 31 trades; stops fired in the break regime
-print("stopped trades:", res.n_stops)
+# golden: 3.6955%, 0.301, 6.32%, 29 trades
+print("stopped trades:", res.n_stops)             # 4
+# the same run with explicit knobs:
+cfg2 = BacktestConfig(window=60, entry_z=2.0, exit_z=0.5, stop_z=4.0,
+                      cost_bps=1.0, slippage_bps=0.5, capital=1e6,
+                      sizing="beta_hedged", pnl_stop_frac=0.02,
+                      max_hold_days=60, cooldown_days=20)
 ```
 
 **C++**
@@ -388,14 +399,17 @@ print("stopped trades:", res.n_stops)
 #include <statarb/backtest.hpp>
 
 // Construct through the validating constructor (window, entry_z, exit_z,
-// stop_z, cost_bps, slippage_bps, capital); the defaults equal config.json.
+// stop_z, cost_bps, slippage_bps, capital). This seven-argument form leaves
+// the v1.2.0 fields at their defaults (beta_hedged sizing, risk limits off);
+// API_SPEC.md section 8 lists sizing, pnl_stop_frac, max_hold_days and
+// cooldown_days.
 // The members are public, but backtest_pair re-validates the struct, so a
 // later `cfg.exit_z = 5.0;` is caught with std::invalid_argument at run time.
 const statarb::BacktestConfig cfg(60, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6);
 statarb::BacktestResult res = statarb::backtest_pair(y_all, x_all, eg.alpha, eg.beta, cfg);
 std::cout << "total " << res.metrics.total_return << "  sharpe " << res.metrics.sharpe
           << "  maxDD " << res.metrics.max_drawdown << "  trades " << res.trades.size()
-          << "  stops " << res.n_stops() << "\n";               // -0.0191, -0.137, 0.1426, 31
+          << "  stops " << res.n_stops() << "\n";               // limits off: -0.0249, -0.169, 0.1392, 31 (2 stops)
 ```
 
 **Rust**
@@ -403,13 +417,14 @@ std::cout << "total " << res.metrics.total_return << "  sharpe " << res.metrics.
 ```rust
 use statarb::{backtest_pair, BacktestConfig};
 
-// BacktestConfig::new validates; a struct literal that bypasses it is
-// re-validated inside backtest_pair / walk_forward (Err(InvalidParam)).
+// BacktestConfig::new validates (this form: beta_hedged sizing, limits off; see
+// API_SPEC.md section 8 for the other fields); a struct literal that bypasses
+// it is re-validated inside backtest_pair / walk_forward (Err(InvalidParam)).
 let cfg = BacktestConfig::new(60, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6)?;
 let res = backtest_pair(y_all, x_all, eg.alpha, eg.beta, &cfg)?;
 println!("total {:.4}  sharpe {:.3}  maxDD {:.4}  trades {}  stops {}",
     res.metrics.total_return, res.metrics.sharpe, res.metrics.max_drawdown,
-    res.trades.len(), res.n_stops());                             // -0.0191, -0.137, 0.1426, 31
+    res.trades.len(), res.n_stops());                             // limits off: -0.0249, -0.169, 0.1392, 31 (2 stops)
 ```
 
 **Java**
@@ -425,29 +440,50 @@ System.out.printf("total %.4f  sharpe %.3f  maxDD %.4f  trades %d  stops %d%n",
 ```
 
 Pinned mechanics worth knowing: signals computed at the day-t close execute
-at the day t+1 close (no look-ahead); legs are equal-dollar (capital/2 each)
-so entries are exactly dollar-neutral; |z| ≥ stop_z while flat means *no
-entry*; a position open on the last day is force-closed as a normal trade,
-while a pending *entry* on the last day is discarded (no zero-day round
-trip). Thresholds and costs must be finite — a config loaded from JSON with
+at the day t+1 close (no look-ahead); with the default `sizing =
+"beta_hedged"` the legs are `capital / (y + beta*x)` units of y against
+`beta` times that of x, so gross notional equals `capital` and the P&L tracks
+the spread (not dollar-neutral); `"equal_dollar"` puts `capital/2` on each
+leg (neutral at entry, but it trades a different spread when beta differs
+from y/x); `beta <= 0` is an error. |z| ≥ stop_z while flat means *no
+entry*. The risk limits are checked at the signal step in this order:
+`pnl_stop_frac` (a stop), then the z-stop, then `max_hold_days` (an exit that
+is not a stop); after a stopped exit, `cooldown_days` blocks new entries. A
+position open on the last day is force-closed as a normal trade, while a
+pending *entry* on the last day is discarded (no zero-day round trip).
+Thresholds and costs must be finite — a config loaded from JSON with
 `"cost_bps": NaN` is refused rather than producing a NaN equity curve and a
-Sharpe of 0.00.
+Sharpe of 0.00. A window too short to reach `entry_z` is refused too:
+|z| cannot exceed `(W-1)/sqrt(W)`, so W = 5 never reaches 2. The 2% / 60 /
+20 limits in `config.json` are round numbers, not tuned.
 
 ---
 
-## 8. How do I run an honest walk-forward evaluation?
+## 8. How do I run an out-of-sample evaluation (holdout and rolling)?
 
 **Python**
 
 ```python
-from statarb import BacktestConfig, load_csv, walk_forward
+from statarb import (config_from_dict, load_config, load_csv,
+                     rolling_walk_forward, walk_forward)
 
 pair = load_csv("../data/pair_equity.csv")
-cfg = BacktestConfig()          # defaults = config.json values
-wf = walk_forward(pair["stock_y"], pair["stock_x"], cfg, insample_frac=0.6)
+y, x = pair["stock_y"], pair["stock_x"]
+cfg = config_from_dict(load_config("../data/config.json"))   # limits on
+
+# walk_forward is a SINGLE HOLDOUT: one fit on 60%, one trade of the other 40%.
+wf = walk_forward(y, x, cfg, insample_frac=0.6)
 print(f"hedge from days 0..{wf.split-1}: alpha {wf.alpha:.4f} beta {wf.beta:.4f}")
-print(f"IS  sharpe {wf.insample.metrics['sharpe']:.2f}")   # +1.49
-print(f"OOS sharpe {wf.oos.metrics['sharpe']:.2f}")        # -1.37 (break!)
+print(f"IS  sharpe {wf.insample.metrics['sharpe']:.2f}")   # +1.40
+print(f"OOS sharpe {wf.oos.metrics['sharpe']:.2f}")        # -0.78 (break!)
+
+# rolling_walk_forward refits every `test` days on the last `train` days.
+rw = rolling_walk_forward(y, x, cfg, train=500, test=100)
+print(len(rw.blocks), "blocks from day", rw.start_day)     # 10 blocks from day 500
+print(f"total {rw.metrics['total_return']:.2%}  sharpe {rw.metrics['sharpe']:.2f}")
+# -0.29%, -0.05. The last three blocks (indices 7-9) fit beta <= 0 and stayed
+# flat (block.skipped is True), which flatters the result.
+print([b.skipped for b in rw.blocks])
 ```
 
 **C++**
@@ -455,7 +491,7 @@ print(f"OOS sharpe {wf.oos.metrics['sharpe']:.2f}")        # -1.37 (break!)
 ```cpp
 statarb::WalkForwardResult wf = statarb::walk_forward(y_all, x_all, cfg, 0.6);
 std::cout << "split " << wf.split << "  IS " << wf.insample.metrics.sharpe
-          << "  OOS " << wf.oos.metrics.sharpe << "\n";           // 900, +1.49, -1.37
+          << "  OOS " << wf.oos.metrics.sharpe << "\n";           // limits off: 900, +1.60, -1.54
 ```
 
 **Rust**
@@ -475,8 +511,17 @@ System.out.printf("split %d  IS %.2f  OOS %.2f%n", wf.split(),
 
 The hedge is estimated by OLS on the first 60% only, and the out-of-sample
 z-score warms up inside the OOS segment — nothing crosses the split. The
-bundled pair degrades hard out-of-sample because the OOS window contains the
-day-1050 regime break; that degradation is the lesson, not a bug.
+bundled pair degrades out-of-sample because the OOS window contains the
+day-1050 regime break; that degradation is the lesson, not a bug. With the
+limits off the same split gives OOS -12.35% and 15.28% drawdown; with them on,
+-4.91% and 6.86%: a smaller loss, still a loss.
+
+`rolling_walk_forward` fits OLS on `[k*test, k*test+train)`, trades the next
+`test` days with a z-score warmed up on earlier days only, is flat at every
+block end, and stitches block P&L into one equity curve with `T - train`
+points starting at day `train`. A block whose fit gives `beta <= 0` is
+`skipped` (flat, zero metrics), not an error. The ports expose the same
+function with the same arguments; see API_SPEC.md section 8.
 
 ---
 
@@ -701,13 +746,94 @@ finiteness, CSV day-column monotonicity) is in API_SPEC.md §9.
 
 ---
 
+## 13. How do I update a rolling z-score or a Kalman hedge one tick at a time?
+
+```python
+import numpy as np
+from statarb import (KalmanStep, RollingZ, engle_granger, kalman_hedge,
+                     load_csv, rolling_zscore, spread)
+
+pair = load_csv("../data/pair_equity.csv")
+y, x = pair["stock_y"], pair["stock_x"]
+eg = engle_granger(y[:900], x[:900])
+s = spread(y, x, eg.alpha, eg.beta)
+
+rz = RollingZ(60)                          # ring buffer, O(1) per update
+z = np.array([rz.update(v) for v in s])    # NaN during warm-up and on zero variance
+batch = rolling_zscore(s, 60)
+ok = ~np.isnan(batch)
+print(np.max(np.abs(z[ok] - batch[ok])))   # 5.2e-13 here; the tests bound it at 1e-9
+
+ks = KalmanStep(1e-4, 1e-3)                # note the argument order below: x first
+alpha, beta, zk = ks.update(x[0], y[0])
+```
+
+`KalmanStep` runs the same scalar recursion as `kalman_hedge` and matches it to
+1e-12. `RollingZ` keeps running sums, so it is not bitwise equal to the batch
+function and drifts slowly with the update count (about 5e-8 after 50,000
+updates at a level of 1e4). The batch function is the trading reference; use
+the streaming forms to follow a live feed, then re-check against batch. A
+non-finite input is an error and leaves the state unchanged. C++, Rust and
+Java expose `RollingZ` and `KalmanStep` with the same contract (API_SPEC.md
+sections 6 and 7).
+
+## 14. How do I choose the ADF lag, and test a pair in both directions?
+
+```python
+from statarb import engle_granger_both, select_lag
+
+lag = select_lag(eg.resid, max_lag=4, nvars=2)     # smallest BIC on a common sample; 0 on this data
+both = engle_granger_both(y[:900], x[:900], maxlag=lag)
+print(both.cointegrated())                          # True only if BOTH directions reject
+print(both.y_on_x.adf.tstat, both.x_on_y.adf.tstat) # -6.03, -5.99 at lag 0 (-5.82, -5.78 at lag 1)
+```
+
+A fixed lag can have the wrong size when the errors are autocorrelated (the
+review measured 31–33% rejections at a nominal 5% under MA(-0.5) errors), and
+the Engle–Granger verdict can differ between `y on x` and `x on y`. Selecting
+the lag and requiring both directions is the cautious default for screening.
+`select_lag` and `engle_granger_both` exist in every port.
+
+## 15. How do I put an interval on a result, and scan many pairs? (Python only)
+
+```python
+import numpy as np
+from statarb.research import (block_bootstrap_sharpe_ci, cost_sensitivity,
+                              cusum_break_test, scan_pairs)
+
+returns = np.diff(rw.equity) / cfg.capital         # rw from recipe 8
+ci = block_bootstrap_sharpe_ci(returns, seed=1)    # circular blocks, seeded
+print(f"{ci.sharpe:.2f} [{ci.lower:.2f}, {ci.upper:.2f}]")   # -0.05 [-1.11, 1.45]
+
+rows = cost_sensitivity(y[:900], x[:900], eg.alpha, eg.beta, cfg)
+print([(r["total_bps"], round(r["sharpe"], 2)) for r in rows])
+# in-sample Sharpe at 0, 1.5, 3, 5, 10, 20 bps: 1.52 1.40 1.28 1.13 0.73 -0.04
+
+print(cusum_break_test(eg.resid).pvalue)           # 0.149 in-sample, no break flagged
+print(cusum_break_test(y - (eg.alpha + eg.beta * x)).pvalue)   # 0.012 full sample
+
+for row in scan_pairs({"Y": y[:900], "X": x[:900]}):
+    print(row.y, row.x, row.adjusted_pvalue, row.selected)
+```
+
+`statarb.research` also has `probabilistic_sharpe`, `deflated_sharpe`,
+`expected_max_sharpe`, `benjamini_hochberg` and `kalman_grid_mle` (which
+reports the innovation z sd and lag-1 autocorrelation; a well-specified
+filter has sd near 1 and autocorrelation near 0). They are judgement aids, not
+part of the trading path, and are not in the goldens. An interval says how
+much the number could move by chance; it does not make a synthetic result
+real.
+
+---
+
 ## Verifying the non-Python snippets
 
-Every C++, Rust and Java block above is extracted in order, the
+Every C++, Rust and Java block in recipes 1–12 is extracted in order, the
 `#include` / `use` / `import` lines hoisted, the rest wrapped in a `main`,
 and the result compiled against the built library and run from the
 language's own directory (so `../data` resolves). This is how the recipes
-were checked for this release; the commands are:
+are checked at release; the Python blocks (including 13–15) are run directly
+from `python/`. The commands are:
 
 ```bash
 # C++ (from cpp/, after bash build.sh)

@@ -29,6 +29,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "python" / "src"))
 
 from statarb import (  # noqa: E402
+    config_from_dict,
+    engle_granger_both,
+    rolling_walk_forward,
+    select_lag,
+    walk_forward,
     BacktestConfig,
     adf_test,
     backtest_pair,
@@ -134,7 +139,31 @@ CONFIG = {
     "significance": 0.05,
     "kalman_delta": 0.0001,
     "kalman_r": 0.001,
+    # Round risk limits chosen before looking at results; NOT tuned.
+    "pnl_stop_frac": 0.02,
+    "max_hold_days": 60,
+    "cooldown_days": 20,
 }
+
+#: Backtest scenarios shared by the golden cases: (sizing, risk limits on).
+SCENARIOS = {
+    "limits_beta": ("beta_hedged", True),
+    "limits_dollar": ("equal_dollar", True),
+    "plain_beta": ("beta_hedged", False),
+    "plain_dollar": ("equal_dollar", False),
+}
+EQUITY_DAYS = (0, 250, 500, 900, 1050, 1200, 1499)
+METRIC_FIELDS = ("total_return", "ann_return", "sharpe", "max_drawdown",
+                 "n_trades", "win_rate", "avg_holding_days", "turnover")
+#: Pinned rolling walk-forward geometry (not tuned).
+ROLL_TRAIN, ROLL_TEST = 500, 100
+
+
+def scenario_config(name: str) -> BacktestConfig:
+    sizing, limits = SCENARIOS[name]
+    off = {} if limits else {"pnl_stop_frac": 0.0, "max_hold_days": 0,
+                             "cooldown_days": 0}
+    return config_from_dict(CONFIG, sizing=sizing, **off)
 
 
 def cross_validate(pair: dict, walks: dict, fx: dict) -> None:
@@ -189,6 +218,9 @@ def cross_validate(pair: dict, walks: dict, fx: dict) -> None:
         assert np.allclose(ours_jo.eigenvalues, lam_ref, atol=1e-8), "Johansen eig"
         sm_jo = coint_johansen(Y, det_order=0, k_ar_diff=1)
         assert np.allclose(ours_jo.trace_stats, sm_jo.lr1, atol=1e-6), "Johansen trace"
+    for series in (resid, walks["walk_a"]):
+        sm_lag = adfuller(series, maxlag=5, regression="c", autolag="BIC")[2]
+        assert select_lag(series, 5, 1) == sm_lag, "select_lag vs adfuller BIC"
     print("statsmodels / numpy cross-validation: OK")
 
 
@@ -257,12 +289,7 @@ def build_golden() -> dict:
     case("zscore_day200", {**z_in, "day": 200}, {"value": z[200]}, 1e-10)
     case("zscore_day1100", {**z_in, "day": 1100}, {"value": z[1100]}, 1e-10)
 
-    cfg = BacktestConfig(
-        window=CONFIG["window"], entry_z=CONFIG["entry_z"],
-        exit_z=CONFIG["exit_z"], stop_z=CONFIG["stop_z"],
-        cost_bps=CONFIG["cost_bps"], slippage_bps=CONFIG["slippage_bps"],
-        capital=CONFIG["capital"],
-    )
+    cfg = scenario_config("limits_beta")
     bt = backtest_pair(y, x, eg.alpha, eg.beta, cfg)
     bt_in = {"data": "pair_equity.csv", "config": "config.json",
              "insample_days": n_is}
@@ -270,6 +297,132 @@ def build_golden() -> dict:
     case("backtest_sharpe", bt_in, {"value": bt.metrics["sharpe"]}, 1e-8)
     case("backtest_max_drawdown", bt_in, {"value": bt.metrics["max_drawdown"]}, 1e-8)
     case("backtest_n_trades", bt_in, {"value": bt.metrics["n_trades"]}, 1e-9)
+
+    # ---- v1.2 cases.  Dispatch on inputs["kind"]; see API_SPEC section 11.
+    def bt_field(res, field: str) -> float:
+        if field == "n_stops":
+            return float(res.n_stops)
+        if field == "equity_sum":
+            return float(np.sum(res.equity))
+        return float(res.metrics[field])
+
+    def bt_tol(field: str) -> float:
+        if field in ("n_trades", "n_stops"):
+            return 1e-9
+        return 1e-3 if field == "equity_sum" else 1e-8
+
+    fields = METRIC_FIELDS + ("n_stops", "equity_sum")
+    z_paths = []
+    for sc in SCENARIOS:
+        res = backtest_pair(y, x, eg.alpha, eg.beta, scenario_config(sc))
+        z_paths.append(res.zscore)
+        base = {"data": "pair_equity.csv", "insample_days": n_is, "scenario": sc}
+        for f in fields:
+            case(f"bt_{sc}_{f}", {**base, "kind": "backtest", "field": f},
+                 {"value": bt_field(res, f)}, bt_tol(f))
+        for d in EQUITY_DAYS:
+            case(f"bt_{sc}_equity_day{d}",
+                 {**base, "kind": "backtest_equity", "day": d},
+                 {"value": float(res.equity[d])}, 1e-6)
+        for i, tr in enumerate(res.trades):
+            vals = {"entry": float(tr.entry_day), "exit": float(tr.exit_day),
+                    "direction": float(tr.direction), "pnl": float(tr.pnl),
+                    "stopped": 1.0 if tr.stopped else 0.0}
+            for f, v in vals.items():
+                case(f"bt_{sc}_trade{i}_{f}",
+                     {**base, "kind": "backtest_trade", "index": i, "field": f},
+                     {"value": v}, 1e-6 if f == "pnl" else 1e-9)
+
+    wf = walk_forward(y, x, cfg, CONFIG["insample_frac"])
+    wf_in = {"data": "pair_equity.csv", "scenario": "limits_beta"}
+    for seg, res in (("insample", wf.insample), ("oos", wf.oos)):
+        z_paths.append(res.zscore)
+        for f in fields:
+            case(f"wf_{seg}_{f}",
+                 {**wf_in, "kind": "walk_forward", "segment": seg, "field": f},
+                 {"value": bt_field(res, f)}, bt_tol(f))
+    for f, v in (("alpha", wf.alpha), ("beta", wf.beta), ("split", float(wf.split))):
+        case(f"wf_fit_{f}", {**wf_in, "kind": "walk_forward", "segment": "fit",
+                             "field": f}, {"value": v}, 1e-9)
+
+    for sc in ("limits_beta", "plain_beta"):
+        rw = rolling_walk_forward(y, x, scenario_config(sc), ROLL_TRAIN, ROLL_TEST)
+        base = {"data": "pair_equity.csv", "scenario": sc,
+                "train": ROLL_TRAIN, "test": ROLL_TEST}
+        for f in fields:
+            case(f"rwf_{sc}_{f}", {**base, "kind": "rolling", "field": f},
+                 {"value": bt_field(rw, f)}, bt_tol(f))
+        case(f"rwf_{sc}_n_blocks", {**base, "kind": "rolling", "field": "n_blocks"},
+             {"value": float(len(rw.blocks))}, 1e-9)
+        for k, blk in enumerate(rw.blocks):
+            z_paths.append(blk.result.zscore)
+            vals = {"start": float(blk.start), "end": float(blk.end),
+                    "alpha": blk.alpha, "beta": blk.beta,
+                    "skipped": 1.0 if blk.skipped else 0.0,
+                    "total_return": blk.result.metrics["total_return"],
+                    "sharpe": blk.result.metrics["sharpe"],
+                    "n_trades": blk.result.metrics["n_trades"]}
+            for f, v in vals.items():
+                case(f"rwf_{sc}_block{k}_{f}",
+                     {**base, "kind": "rolling_block", "block": k, "field": f},
+                     {"value": v}, 1e-8)
+
+    fx_y = np.column_stack([np.log(fx["eurusd"]), np.log(fx["gbpusd"]),
+                            np.log(fx["eurgbp"])])
+    j3 = johansen_trace(fx_y)
+    fx_in = {"data": "fx_triangle.csv", "logs": "eurusd,gbpusd,eurgbp"}
+    for r in range(3):
+        case(f"johansen_fx_trace_r{r}", fx_in, {"value": j3.trace_stats[r]}, 1e-6)
+        case(f"johansen_fx_vector{r}", fx_in, {"value": j3.beta[r, 0]}, 1e-6)
+    case("johansen_fx_rank", fx_in, {"value": float(j3.rank)}, 1e-9)
+
+    for d, tag in ((500, "day500"), (1200, "day1200"), (len(y) - 1, "final")):
+        case(f"kalman_alpha_{tag}", {**kal_in, "day": d}, {"value": km.alpha[d]}, 1e-8)
+        case(f"kalman_z_{tag}", {**kal_in, "day": d}, {"value": km.z[d]}, 1e-8)
+
+    for lag in (0, 3):
+        a = adf_test(eg.resid, maxlag=lag, nvars=2)
+        lag_in = {**ins_in, "maxlag": lag, "nvars": 2}
+        case(f"adf_resid_lag{lag}_tstat", lag_in, {"value": a.tstat}, 1e-8)
+        case(f"adf_resid_lag{lag}_crit5", lag_in, {"value": a.crit["5%"]}, 1e-10)
+        case(f"adf_resid_lag{lag}_nobs", lag_in, {"value": float(a.nobs)}, 1e-9)
+    r3 = ols(fx_y[:, 0], fx_y[:, 1:], intercept=True).resid
+    a3 = adf_test(r3, maxlag=CONFIG["adf_maxlag"], nvars=3)
+    a3_in = {**fx_in, "maxlag": CONFIG["adf_maxlag"], "nvars": 3}
+    case("adf_fx_nvars3_tstat", a3_in, {"value": a3.tstat}, 1e-8)
+    case("adf_fx_nvars3_crit1", a3_in, {"value": a3.crit["1%"]}, 1e-10)
+    case("adf_fx_nvars3_crit5", a3_in, {"value": a3.crit["5%"]}, 1e-10)
+    case("adf_fx_nvars3_crit10", a3_in, {"value": a3.crit["10%"]}, 1e-10)
+    case("adf_fx_nvars3_pvalue", a3_in, {"value": a3.pvalue}, 1e-10)
+
+    case("select_lag_resid", {**ins_in, "max_lag": 5, "nvars": 2},
+         {"value": float(select_lag(eg.resid, 5, 2))}, 1e-9)
+    case("select_lag_walk", {**rw_in, "max_lag": 5, "nvars": 1},
+         {"value": float(select_lag(walks["walk_a"], 5, 1))}, 1e-9)
+
+    both = engle_granger_both(y[:n_is], x[:n_is], maxlag=CONFIG["adf_maxlag"])
+    case("eg_both_insample_x_on_y_tstat", ins_in,
+         {"value": both.x_on_y.adf.tstat}, 1e-8)
+    case("eg_both_insample_coint", ins_in,
+         {"value": 1.0 if both.cointegrated(0.05) else 0.0}, 1e-9)
+
+    # Sentinels on closed-form series of 20 points (JSON has no inf, so the
+    # +inf case is stored as the flag 1.0).
+    growth = 1.1 ** np.arange(20)
+    alternating = np.where(np.arange(20) % 2 == 0, 1.0, -1.0)
+    assert math.isinf(half_life(growth)) and half_life(alternating) == 0.0
+    case("halflife_growth_is_inf", {"series": "1.1^t", "n": 20}, {"value": 1.0}, 1e-9)
+    case("halflife_alternating_zero", {"series": "(-1)^t", "n": 20}, {"value": 0.0}, 1e-9)
+
+    # Smallest distance of any z from any threshold across every run above.
+    # Ports assert it exceeds 1e-6: below that, rounding could flip a trade.
+    margin = min(
+        float(np.nanmin(np.abs(np.abs(zp) - th)))
+        for zp in z_paths if not np.all(np.isnan(zp))
+        for th in (CONFIG["entry_z"], CONFIG["exit_z"], CONFIG["stop_z"])
+    )
+    assert margin > 1e-6, f"threshold margin too small: {margin}"
+    case("zscore_threshold_margin", {"kind": "margin"}, {"value": margin}, 1e-9)
 
     # sanity for the teaching narrative
     assert eg.cointegrated(0.05), "in-sample pair must be cointegrated"
@@ -294,8 +447,6 @@ def main() -> None:
         json.dump(golden, f, indent=2)
         f.write("\n")
     print(f"wrote {len(golden['cases'])} golden cases")
-    for c in golden["cases"]:
-        print(f"  {c['name']:28s} -> {c['expect']['value']:.10g}  (tol {c['tol']:g})")
 
 
 if __name__ == "__main__":

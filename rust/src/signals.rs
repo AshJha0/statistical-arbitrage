@@ -39,6 +39,7 @@ pub fn spread(y: &[f64], x: &[f64], alpha: f64, beta: f64) -> Result<Vec<f64>> {
 /// ```text
 /// z_t = (s_t - mean(s_{t-W+1..t})) / std(s_{t-W+1..t}, ddof=1)
 /// ```
+/// Summation is pinned: plain sequential left-to-right sums (API_SPEC s7).
 ///
 /// The first `W-1` entries are NaN (insufficient history). A window whose
 /// sample standard deviation is `<= ZSCORE_STD_FLOOR` yields NaN (zero-
@@ -66,16 +67,107 @@ pub fn rolling_zscore(s: &[f64], window: usize) -> Result<Vec<f64>> {
     }
     let t_len = s.len();
     let mut z = vec![f64::NAN; t_len];
+    // PINNED: plain left-to-right sums, one accumulator from 0.0, in every
+    // port (no pairwise, Kahan or Neumaier summation).
     for t in (window - 1)..t_len {
-        let w = &s[t + 1 - window..t + 1];
-        let m = w.iter().sum::<f64>() / window as f64;
-        let var = w.iter().map(|v| (v - m) * (v - m)).sum::<f64>() / (window - 1) as f64;
-        let sd = var.sqrt();
+        let lo = t + 1 - window;
+        let mut total = 0.0_f64;
+        for &v in &s[lo..=t] {
+            total += v;
+        }
+        let m = total / window as f64;
+        let mut ss = 0.0_f64;
+        for &v in &s[lo..=t] {
+            let d = v - m;
+            ss += d * d;
+        }
+        let sd = (ss / (window - 1) as f64).sqrt();
         if sd > ZSCORE_STD_FLOOR {
             z[t] = (s[t] - m) / sd;
         }
     }
     Ok(z)
+}
+
+/// Streaming rolling z-score: ring buffer and running moments, O(1) per
+/// update and no allocation in [`RollingZ::update`].
+///
+/// Same definition and NaN rules as [`rolling_zscore`]. While filling it
+/// uses Welford's update; once full it slides the window with
+/// `mean' = mean + (s - old)/W` and
+/// `m2 += (s - old)*(s - mean' + old - mean)` (floored at 0). It agrees
+/// with the batch function to about 1e-9 at the bundled length and is NOT
+/// bitwise equal; the batch function stays the trading reference.
+#[derive(Debug, Clone)]
+pub struct RollingZ {
+    window: usize,
+    buf: Vec<f64>,
+    head: usize,
+    count: usize,
+    mean: f64,
+    m2: f64,
+}
+
+impl RollingZ {
+    /// New streaming z-score with window `window` (>= 2).
+    ///
+    /// # Errors
+    ///
+    /// `window < 2`.
+    pub fn new(window: usize) -> Result<Self> {
+        if window < 2 {
+            return Err(StatarbError::InvalidParam(
+                "window must be an integer >= 2".to_string(),
+            ));
+        }
+        Ok(RollingZ {
+            window,
+            buf: vec![0.0; window],
+            head: 0,
+            count: 0,
+            mean: 0.0,
+            m2: 0.0,
+        })
+    }
+
+    /// Add one observation; returns z, or NaN while warming up or on a
+    /// zero-variance window.
+    ///
+    /// # Errors
+    ///
+    /// Non-finite `s` (the state is left unchanged).
+    pub fn update(&mut self, s: f64) -> Result<f64> {
+        if !s.is_finite() {
+            return Err(StatarbError::NonFinite(
+                "inputs must be finite (no NaN/inf)".to_string(),
+            ));
+        }
+        if self.count < self.window {
+            self.count += 1;
+            let delta = s - self.mean;
+            self.mean += delta / self.count as f64;
+            self.m2 += delta * (s - self.mean);
+        } else {
+            let old = self.buf[self.head];
+            let old_mean = self.mean;
+            self.mean = old_mean + (s - old) / self.window as f64;
+            self.m2 += (s - old) * (s - self.mean + old - old_mean);
+            if self.m2 < 0.0 {
+                self.m2 = 0.0;
+            }
+        }
+        self.buf[self.head] = s;
+        self.head = (self.head + 1) % self.window;
+        if self.count < self.window {
+            return Ok(f64::NAN);
+        }
+        let sd = (self.m2 / (self.window - 1) as f64).sqrt();
+        if sd > ZSCORE_STD_FLOOR {
+            Ok((s - self.mean) / sd)
+        } else {
+            Ok(f64::NAN)
+        }
+    }
 }
 
 /// Half-life of mean reversion from an AR(1) fit on the spread.

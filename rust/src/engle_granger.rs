@@ -56,3 +56,35 @@ pub fn engle_granger(y: &[f64], x: &[f64], maxlag: usize) -> Result<EgResult> {
         adf,
     })
 }
+
+/// Engle-Granger run in both directions (the test is not symmetric).
+#[derive(Debug, Clone)]
+pub struct EgBothResult {
+    /// `y` regressed on `x`.
+    pub y_on_x: EgResult,
+    /// `x` regressed on `y`.
+    pub x_on_y: EgResult,
+}
+
+impl EgBothResult {
+    /// True only when BOTH directions reject at `alpha`.
+    ///
+    /// # Errors
+    ///
+    /// `alpha` outside {0.01, 0.05, 0.10}.
+    pub fn cointegrated(&self, alpha: f64) -> Result<bool> {
+        Ok(self.y_on_x.cointegrated(alpha)? && self.x_on_y.cointegrated(alpha)?)
+    }
+}
+
+/// Run [`engle_granger`] as `y` on `x` and as `x` on `y`.
+///
+/// # Errors
+///
+/// As [`engle_granger`], for either direction.
+pub fn engle_granger_both(y: &[f64], x: &[f64], maxlag: usize) -> Result<EgBothResult> {
+    Ok(EgBothResult {
+        y_on_x: engle_granger(y, x, maxlag)?,
+        x_on_y: engle_granger(x, y, maxlag)?,
+    })
+}

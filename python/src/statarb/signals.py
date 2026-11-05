@@ -34,6 +34,10 @@ def rolling_zscore(s: np.ndarray, window: int) -> np.ndarray:
     sample standard deviation is <= ZSCORE_STD_FLOOR yields NaN (zero-
     variance guard) rather than +/-inf.
 
+    Summation is PINNED: plain left-to-right sums for the mean and for the
+    squared deviations, so all ports round identically.  Do not replace the
+    loops with numpy (pairwise) or builtin ``sum`` (compensated since 3.12).
+
     Raises:
         ValueError: window < 2, window > len(s), or non-finite input.
     """
@@ -50,13 +54,73 @@ def rolling_zscore(s: np.ndarray, window: int) -> np.ndarray:
         raise ValueError("inputs must be finite (no NaN/inf)")
     T = s.shape[0]
     z = np.full(T, np.nan)
+    v = s.tolist()
     for t in range(window - 1, T):
-        w = s[t - window + 1 : t + 1]
-        m = float(w.mean())
-        sd = float(w.std(ddof=1))
+        lo = t - window + 1
+        total = 0.0
+        for i in range(lo, t + 1):
+            total += v[i]
+        m = total / window
+        ss = 0.0
+        for i in range(lo, t + 1):
+            d = v[i] - m
+            ss += d * d
+        sd = math.sqrt(ss / (window - 1))
         if sd > ZSCORE_STD_FLOOR:
-            z[t] = (s[t] - m) / sd
+            z[t] = (v[t] - m) / sd
     return z
+
+
+class RollingZ:
+    """Streaming rolling z-score: ring buffer, O(1) per update.
+
+    Same definition and NaN rules as :func:`rolling_zscore`, but with running
+    moments (Welford add, then a sliding replace), so it agrees to about 1e-9
+    and is not bitwise pinned.  The batch function stays the trading reference.
+    """
+
+    __slots__ = ("window", "_buf", "_head", "_count", "_mean", "_m2")
+
+    def __init__(self, window: int) -> None:
+        if (isinstance(window, bool) or not isinstance(window, (int, np.integer))
+                or window < 2):
+            raise ValueError("window must be an integer >= 2")
+        self.window = int(window)
+        self._buf = [0.0] * self.window
+        self._head = 0
+        self._count = 0
+        self._mean = 0.0
+        self._m2 = 0.0
+
+    def update(self, s: float) -> float:
+        """Add one observation; return z, or NaN while warming up.
+
+        Raises:
+            ValueError: non-finite observation (state is left unchanged).
+        """
+        if not math.isfinite(s):
+            raise ValueError("inputs must be finite (no NaN/inf)")
+        s = float(s)
+        if self._count < self.window:
+            self._count += 1
+            delta = s - self._mean
+            self._mean += delta / self._count
+            self._m2 += delta * (s - self._mean)
+        else:
+            old = self._buf[self._head]
+            old_mean = self._mean
+            self._mean = old_mean + (s - old) / self.window
+            self._m2 += (s - old) * (s - self._mean + old - old_mean)
+            if self._m2 < 0.0:
+                self._m2 = 0.0
+        self._buf[self._head] = s
+        self._head = (self._head + 1) % self.window
+        if self._count < self.window:
+            return math.nan
+        sd = math.sqrt(self._m2 / (self.window - 1))
+        if sd > ZSCORE_STD_FLOOR:
+            return (s - self._mean) / sd
+        return math.nan
 
 
 def half_life(s: np.ndarray) -> float:

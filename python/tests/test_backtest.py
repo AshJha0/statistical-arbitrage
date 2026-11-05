@@ -50,9 +50,8 @@ def test_accounting_identity(bundled_run, config: dict) -> None:
 
 
 def test_dollar_neutrality_at_entry(bundled_run, config: dict) -> None:
-    """At each entry execution the two legs carry capital/2 notional each:
-    the entry-day traded notional equals gross capital and costs equal
-    capital * bps."""
+    """At each entry execution gross notional equals capital (both sizing
+    modes), so the entry-day cost equals capital * bps."""
     res, _, _, _ = bundled_run
     cap = config["capital"]
     bps = (config["cost_bps"] + config["slippage_bps"]) / 1e4
@@ -84,9 +83,10 @@ def test_trades_well_formed(bundled_run) -> None:
 
 
 def test_no_trades_metrics_guarded(pair: dict, config: dict) -> None:
-    """Unreachable entry threshold: flat equity, all metrics zero/finite."""
+    """Entry threshold that is reachable but never hit: flat equity, all
+    metrics zero/finite."""
     y, x = pair["stock_y"][:400], pair["stock_x"][:400]
-    cfg = BacktestConfig(window=60, entry_z=50.0, exit_z=0.5, stop_z=60.0,
+    cfg = BacktestConfig(window=60, entry_z=7.5, exit_z=0.5, stop_z=7.6,
                          capital=config["capital"])
     res = backtest_pair(y, x, 12.0, 1.7, cfg)
     m = res.metrics
@@ -177,11 +177,11 @@ def test_end_of_data_pending_entry_discarded() -> None:
     s = np.sin(0.7 * t)
     s[T - 2] = 6.0
     y = 10.0 + x + s
-    cfg = BacktestConfig(window=20, entry_z=2.0, exit_z=0.5, stop_z=8.0,
+    cfg = BacktestConfig(window=20, entry_z=2.0, exit_z=0.5, stop_z=4.24,
                          cost_bps=1.0, slippage_bps=0.5)
     z = _zpath(s, 20)
     assert np.nanmax(np.abs(z[: T - 2])) < 2.0          # no earlier signal
-    assert 2.0 <= z[T - 2] < 8.0                         # entry band at T-2
+    assert 2.0 <= z[T - 2] < 4.24                        # entry band at T-2
     res = backtest_pair(y, x, 10.0, 1.0, cfg)
     assert res.trades == []
     assert res.metrics["n_trades"] == 0.0
@@ -237,7 +237,7 @@ def test_stop_exit_is_flagged_and_executes_next_day() -> None:
     x = 200.0 + 0.5 * np.sin(t)
     y = 10.0 + x + s
     cfg = BacktestConfig(window=W, entry_z=2.0, exit_z=0.5, stop_z=4.0,
-                         cost_bps=1.0, slippage_bps=0.5)
+                         cost_bps=1.0, slippage_bps=0.5, sizing="equal_dollar")
     z = _zpath(s, W)
     assert np.nanmax(np.abs(z[:t0])) < cfg.entry_z
     assert cfg.entry_z <= z[t0] < cfg.stop_z
@@ -295,7 +295,7 @@ def test_equity_nonpositive_metrics_defined() -> None:
     x[t0 + 2 :] = 200.0                  # short leg quadruples after entry
     y = 100.0 + s                        # alpha = 50, beta = 1
     cfg = BacktestConfig(window=W, entry_z=2.0, exit_z=0.5, stop_z=4.0,
-                         cost_bps=0.0, slippage_bps=0.0)
+                         cost_bps=0.0, slippage_bps=0.0, sizing="equal_dollar")
     res = backtest_pair(y, x, 50.0, 1.0, cfg)
     assert len(res.trades) == 1
     tr = res.trades[0]
@@ -338,11 +338,11 @@ def test_walk_forward_length_mismatch_is_typed_error(pair: dict, config: dict) -
 def test_walk_forward_split_exact() -> None:
     """Proposed test 8 (MIN-10): floor(T * frac) is the intended integer
     (700 * 0.7 == 489.99999999999994 in binary floating point)."""
-    cfg = BacktestConfig(window=5, entry_z=50.0, exit_z=0.5, stop_z=60.0)
+    cfg = BacktestConfig(window=5, entry_z=1.5, exit_z=0.5, stop_z=1.7)
     for T, frac, expected in ((700, 0.7, 490), (100, 0.29, 29), (1500, 0.6, 900)):
         t = np.arange(T)
-        y = 100.0 + np.sin(0.3 * t)
         x = 50.0 + np.cos(0.2 * t)
+        y = 100.0 + 2.0 * x + 0.1 * np.sin(0.3 * t)
         assert walk_forward(y, x, cfg, frac).split == expected
 
 

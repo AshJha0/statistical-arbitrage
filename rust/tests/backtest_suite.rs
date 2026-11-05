@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use statarb::{
     backtest_pair, engle_granger, load_config, load_csv, walk_forward, BacktestConfig,
-    BacktestResult, StatarbError,
+    BacktestResult, Sizing, StatarbError,
 };
 
 fn data_dir() -> PathBuf {
@@ -20,16 +20,7 @@ fn bundled() -> (Vec<f64>, Vec<f64>, BacktestConfig, f64, f64) {
     let x = pair["stock_x"].clone();
     let n_is = (y.len() as f64 * cfg["insample_frac"]) as usize;
     let eg = engle_granger(&y[..n_is], &x[..n_is], cfg["adf_maxlag"] as usize).unwrap();
-    let bt_cfg = BacktestConfig::new(
-        cfg["window"] as usize,
-        cfg["entry_z"],
-        cfg["exit_z"],
-        cfg["stop_z"],
-        cfg["cost_bps"],
-        cfg["slippage_bps"],
-        cfg["capital"],
-    )
-    .unwrap();
+    let bt_cfg = BacktestConfig::from_map(&cfg).unwrap();
     (y, x, bt_cfg, eg.alpha, eg.beta)
 }
 
@@ -61,13 +52,14 @@ fn accounting_identity_holds() {
 
 #[test]
 fn dollar_neutral_at_entry() {
-    // each entry trades exactly capital of notional (capital/2 per leg),
-    // so the entry-day cost equals capital * total bps
-    let (res, cfg) = bundled_run();
+    // equal_dollar: each entry trades exactly capital of notional (capital/2
+    // per leg), so the entry-day cost equals capital * total bps
+    let (y, x, mut cfg, a, b) = bundled();
+    cfg.sizing = Sizing::EqualDollar;
+    let res = backtest_pair(&y, &x, a, b, &cfg).unwrap();
     let cap = cfg.capital;
     let bps = (cfg.cost_bps + cfg.slippage_bps) / 1e4;
     assert!(!res.trades.is_empty());
-    let (y, x, _, _, _) = bundled();
     for tr in &res.trades {
         assert!((res.daily_cost[tr.entry_day] - cap * bps).abs() < 1e-6);
         // recompute the pinned legs: net dollar position is exactly zero
@@ -103,15 +95,24 @@ fn trades_well_formed_and_metrics_consistent() {
     assert!(m.max_drawdown >= 0.0);
     // each round trip trades roughly 2x capital (entry + exit legs)
     let per_trade = m.turnover / m.n_trades as f64;
-    assert!(per_trade > 1.5 && per_trade < 2.5, "turnover/trade {per_trade}");
+    assert!(
+        per_trade > 1.5 && per_trade < 2.5,
+        "turnover/trade {per_trade}"
+    );
     assert!(res.n_stops() <= m.n_trades);
 }
 
 #[test]
 fn no_trades_all_metrics_zero() {
-    // entry threshold far beyond any achievable z: no trades, flat equity
-    let (y, x, _, a, b) = bundled();
-    let cfg = BacktestConfig::new(60, 50.0, 0.5, 51.0, 1.0, 0.5, 1e6).unwrap();
+    // a spread that never leaves the exit band: no trades, flat equity
+    // (an unreachable entry_z is a dead config and is rejected instead)
+    let t_len = 200usize;
+    let x = vec![50.0; t_len];
+    let y: Vec<f64> = (0..t_len)
+        .map(|t| 100.0 + 0.01 * (0.7 * t as f64).sin())
+        .collect();
+    let cfg = BacktestConfig::new(60, 7.0, 0.5, 7.5, 1.0, 0.5, 1e6).unwrap();
+    let (a, b) = (50.0, 1.0);
     let res = backtest_pair(&y, &x, a, b, &cfg).unwrap();
     assert!(res.trades.is_empty());
     let m = &res.metrics;
@@ -201,7 +202,9 @@ fn zpath(s: &[f64], w: usize) -> Vec<f64> {
 }
 
 fn max_abs_finite(z: &[f64]) -> f64 {
-    z.iter().filter(|v| v.is_finite()).fold(0.0, |m, v| m.max(v.abs()))
+    z.iter()
+        .filter(|v| v.is_finite())
+        .fold(0.0, |m, v| m.max(v.abs()))
 }
 
 #[test]
@@ -211,12 +214,12 @@ fn end_of_data_pending_entry_discarded() {
     let t_len = 80usize;
     let x: Vec<f64> = (0..t_len).map(|t| 200.0 + 0.5 * (t as f64).sin()).collect();
     let mut s: Vec<f64> = (0..t_len).map(|t| (0.7 * t as f64).sin()).collect();
-    s[t_len - 2] = 6.0;
+    s[t_len - 2] = 3.0;
     let y: Vec<f64> = (0..t_len).map(|t| 10.0 + x[t] + s[t]).collect();
-    let cfg = BacktestConfig::new(20, 2.0, 0.5, 8.0, 1.0, 0.5, 1e6).unwrap();
+    let cfg = BacktestConfig::new(20, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6).unwrap();
     let z = zpath(&s, 20);
     assert!(max_abs_finite(&z[..t_len - 2]) < 2.0);
-    assert!(z[t_len - 2] >= 2.0 && z[t_len - 2] < 8.0);
+    assert!(z[t_len - 2] >= 2.0 && z[t_len - 2] < 4.0);
     let res = backtest_pair(&y, &x, 10.0, 1.0, &cfg).unwrap();
     assert!(res.trades.is_empty());
     assert_eq!(res.metrics.n_trades, 0);
@@ -234,7 +237,7 @@ fn zero_day_roundtrip_never_reported() {
         let res = backtest_pair(&y[..t_len], &x[..t_len], a, b, &cfg).unwrap();
         for tr in &res.trades {
             assert!(tr.exit_day > tr.entry_day, "T={t_len}: {tr:?}");
-            assert!(tr.exit_day <= t_len - 1);
+            assert!(tr.exit_day < t_len);
         }
     }
 }
@@ -273,7 +276,8 @@ fn stop_exit_is_flagged_and_executes_next_day() {
     s[t0 + 2] = 0.5;
     s[t0 + 3] = 5.0;
     let y: Vec<f64> = (0..t_len).map(|t| 10.0 + x[t] + s[t]).collect();
-    let cfg = BacktestConfig::new(w, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6).unwrap();
+    let mut cfg = BacktestConfig::new(w, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6).unwrap();
+    cfg.sizing = Sizing::EqualDollar;
     let z = zpath(&s, w);
     assert!(max_abs_finite(&z[..t0]) < cfg.entry_z);
     assert!(z[t0] >= cfg.entry_z && z[t0] < cfg.stop_z);
@@ -285,7 +289,10 @@ fn stop_exit_is_flagged_and_executes_next_day() {
     let res = backtest_pair(&y, &x, 10.0, 1.0, &cfg).unwrap();
     assert_eq!(res.trades.len(), 1);
     let tr = &res.trades[0];
-    assert_eq!((tr.entry_day, tr.exit_day, tr.direction, tr.stopped), (t0 + 1, t0 + 4, -1, true));
+    assert_eq!(
+        (tr.entry_day, tr.exit_day, tr.direction, tr.stopped),
+        (t0 + 1, t0 + 4, -1, true)
+    );
     assert_eq!(res.n_stops(), 1);
     let (bps, cap) = (1.5e-4, 1e6);
     let qy = -(cap / 2.0) / y[t0 + 1];
@@ -323,7 +330,10 @@ fn reentry_after_exit_same_direction() {
         .iter()
         .map(|t| (t.entry_day, t.exit_day, t.direction, t.stopped))
         .collect();
-    assert_eq!(got, vec![(t0 + 1, t0 + 2, -1, false), (t0 + 3, t0 + 4, -1, false)]);
+    assert_eq!(
+        got,
+        vec![(t0 + 1, t0 + 2, -1, false), (t0 + 3, t0 + 4, -1, false)]
+    );
     assert_eq!(res.trades[1].entry_day, res.trades[0].exit_day + 1);
 }
 
@@ -342,11 +352,15 @@ fn equity_nonpositive_metrics_defined() {
         *v = 200.0; // short leg quadruples after entry
     }
     let y: Vec<f64> = s.iter().map(|v| 100.0 + v).collect(); // alpha 50, beta 1
-    let cfg = BacktestConfig::new(w, 2.0, 0.5, 4.0, 0.0, 0.0, 1e6).unwrap();
+    let mut cfg = BacktestConfig::new(w, 2.0, 0.5, 4.0, 0.0, 0.0, 1e6).unwrap();
+    cfg.sizing = Sizing::EqualDollar;
     let res = backtest_pair(&y, &x, 50.0, 1.0, &cfg).unwrap();
     assert_eq!(res.trades.len(), 1);
     let tr = &res.trades[0];
-    assert_eq!((tr.entry_day, tr.exit_day, tr.direction, tr.stopped), (t0 + 1, t0 + 3, 1, true));
+    assert_eq!(
+        (tr.entry_day, tr.exit_day, tr.direction, tr.stopped),
+        (t0 + 1, t0 + 3, 1, true)
+    );
     assert!((tr.pnl + 1.5e6).abs() < 1e-6); // q_x = -1e4 shares * 150
     assert!((res.equity[t_len - 1] + 5.0e5).abs() < 1e-6);
     let m = &res.metrics;
@@ -390,6 +404,7 @@ fn config_revalidated_at_run() {
         cost_bps: 1.0,
         slippage_bps: 0.5,
         capital: 1e6,
+        ..BacktestConfig::default()
     };
     let p: Vec<f64> = (0..100).map(|i| 50.0 + (0.1 * i as f64).sin()).collect();
     let q: Vec<f64> = (0..100).map(|i| 30.0 + (0.3 * i as f64).cos()).collect();
@@ -401,7 +416,11 @@ fn config_revalidated_at_run() {
         walk_forward(&p, &q, &cfg, 0.5),
         Err(StatarbError::InvalidParam(_))
     ));
-    let zero_cap = BacktestConfig { exit_z: 0.5, capital: 0.0, ..cfg.clone() };
+    let zero_cap = BacktestConfig {
+        exit_z: 0.5,
+        capital: 0.0,
+        ..cfg.clone()
+    };
     assert!(matches!(
         backtest_pair(&p, &q, 0.0, 1.0, &zero_cap),
         Err(StatarbError::InvalidParam(_))
@@ -422,11 +441,15 @@ fn walk_forward_length_mismatch_is_typed_error() {
 fn walk_forward_split_exact() {
     // proposed test 8 (MIN-10): floor(T * frac) is the intended integer
     // (700 * 0.7 == 489.99999999999994 in binary floating point)
-    let cfg = BacktestConfig::new(5, 50.0, 0.5, 60.0, 1.0, 0.5, 1e6).unwrap();
+    let cfg = BacktestConfig::new(5, 1.5, 0.5, 1.7, 1.0, 0.5, 1e6).unwrap();
     for (t_len, frac, expected) in [(700usize, 0.7, 490usize), (100, 0.29, 29), (1500, 0.6, 900)] {
         let y: Vec<f64> = (0..t_len).map(|t| 100.0 + (0.3 * t as f64).sin()).collect();
         let x: Vec<f64> = (0..t_len).map(|t| 50.0 + (0.2 * t as f64).cos()).collect();
-        assert_eq!(walk_forward(&y, &x, &cfg, frac).unwrap().split, expected, "T={t_len}");
+        assert_eq!(
+            walk_forward(&y, &x, &cfg, frac).unwrap().split,
+            expected,
+            "T={t_len}"
+        );
     }
 }
 

@@ -12,6 +12,7 @@
 //! * a 2-norm condition number for symmetric matrices via the Jacobi
 //!   eigenvalues (`cond = max|lambda| / min|lambda|`), used for the
 //!   `cond(X'X) <= 1e12` collinearity guard.
+#![allow(clippy::needless_range_loop)] // index form mirrors the pinned matrix recursions
 
 use crate::error::{Result, StatarbError};
 

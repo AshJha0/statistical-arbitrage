@@ -76,71 +76,36 @@ public final class Kalman {
         if (!(LinAlg.allFinite(y) && LinAlg.allFinite(x))) {
             throw new IllegalArgumentException("inputs must be finite (no NaN/inf)");
         }
-        if (!(delta > 0.0 && delta < 1.0)) {
-            throw new IllegalArgumentException("delta must lie strictly inside (0, 1)");
-        }
-        // negated comparison so NaN fails; +inf is rejected explicitly
-        if (!(r > 0.0 && Double.isFinite(r))) {
-            throw new IllegalArgumentException("observation variance r must be > 0 and finite");
-        }
+        checkParams(delta, r);
 
         int n = y.length;
-        double q = delta / (1.0 - delta);
-        double s0 = 0.0;
-        double s1 = 0.0;
-        // P as explicit 2x2 entries; symmetric by construction
-        double p00 = P0_SCALE;
-        double p01 = 0.0;
-        double p10 = 0.0;
-        double p11 = P0_SCALE;
-
+        KalmanStep step = new KalmanStep(delta, r);
         double[] alpha = new double[n];
         double[] beta = new double[n];
         double[] z = new double[n];
         double[] innov = new double[n];
         double[] svar = new double[n];
 
+        // One recursion for batch and streaming, so the two cannot diverge.
         for (int t = 0; t < n; t++) {
-            // predict: P_pred = P + Q (state prediction = s)
-            double a00 = p00 + q;
-            double a01 = p01;
-            double a10 = p10;
-            double a11 = p11 + q;
-            double h1 = x[t]; // H = [1, h1]
-            double e = y[t] - (s0 + h1 * s1);
-            // S = H P_pred H' + r, computed as (H @ P_pred) @ H' like numpy
-            double hp0 = a00 + h1 * a10;
-            double hp1 = a01 + h1 * a11;
-            double s = hp0 + hp1 * h1 + r;
-            double k0 = (a00 + a01 * h1) / s; // K = P_pred H' / S
-            double k1 = (a10 + a11 * h1) / s;
-            s0 += k0 * e;
-            s1 += k1 * e;
-            // Joseph form: P = (I - K H) P_pred (I - K H)' + r K K'
-            double i00 = 1.0 - k0;
-            double i01 = -k0 * h1;
-            double i10 = -k1;
-            double i11 = 1.0 - k1 * h1;
-            double b00 = i00 * a00 + i01 * a10;
-            double b01 = i00 * a01 + i01 * a11;
-            double b10 = i10 * a00 + i11 * a10;
-            double b11 = i10 * a01 + i11 * a11;
-            p00 = b00 * i00 + b01 * i01 + r * k0 * k0;
-            p01 = b00 * i10 + b01 * i11 + r * k0 * k1;
-            p10 = b10 * i00 + b11 * i01 + r * k1 * k0;
-            p11 = b10 * i10 + b11 * i11 + r * k1 * k1;
-            double sym = 0.5 * (p01 + p10); // symmetrise against rounding
-            p01 = sym;
-            p10 = sym;
-
-            alpha[t] = s0;
-            beta[t] = s1;
-            innov[t] = e;
-            svar[t] = s;
-            z[t] = e / Math.sqrt(s);
+            z[t] = step.update(x[t], y[t]);
+            alpha[t] = step.alpha();
+            beta[t] = step.beta();
+            innov[t] = step.innovation();
+            svar[t] = step.sVar();
         }
 
-        double[][] finalCov = {{p00, p01}, {p10, p11}};
+        double[][] finalCov = step.covariance();
         return new Result(alpha, beta, z, innov, svar, finalCov);
+    }
+
+    /** Shared delta / r validation (negated comparisons so NaN fails). */
+    static void checkParams(double delta, double r) {
+        if (!(delta > 0.0 && delta < 1.0)) {
+            throw new IllegalArgumentException("delta must lie strictly inside (0, 1)");
+        }
+        if (!(r > 0.0 && Double.isFinite(r))) {
+            throw new IllegalArgumentException("observation variance r must be > 0 and finite");
+        }
     }
 }

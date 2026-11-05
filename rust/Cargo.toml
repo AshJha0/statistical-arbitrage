@@ -1,12 +1,13 @@
 [package]
 name = "statarb"
-version = "0.1.0"
+version = "1.2.0"
 edition = "2021"
+rust-version = "1.85"
 description = "Statistical arbitrage toolkit: cointegration, Kalman dynamic hedge, pairs backtest"
 license = "MIT"
 
 [dependencies]
-serde_json = "1"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -14,3 +15,7 @@ serde = { version = "1", features = ["derive"] }
 [[bin]]
 name = "demo"
 path = "src/bin/demo.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1

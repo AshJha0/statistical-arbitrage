@@ -31,10 +31,12 @@
 //! the 95% column; no small-sample correction, no maximum-eigenvalue
 //! variant, no p-values. Meant for 2-3 asset pairs-trading diagnostics,
 //! not general VECM work.
+#![allow(clippy::needless_range_loop)] // index form mirrors the pinned matrix recursions
 
 use crate::error::{Result, StatarbError};
-use crate::linalg::{cholesky_lower, cond_sym, identity, jacobi_eigh, lu_solve_multi, mat_mul,
-                    transpose, Matrix};
+use crate::linalg::{
+    cholesky_lower, cond_sym, identity, jacobi_eigh, lu_solve_multi, mat_mul, transpose, Matrix,
+};
 
 /// Osterwald-Lenum (1992) 95% critical values for the TRACE statistic,
 /// model with unrestricted constant, indexed by `n - r`:

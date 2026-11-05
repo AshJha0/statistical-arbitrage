@@ -2,6 +2,7 @@
 /// \brief Spread construction, rolling z-score, and mean-reversion half-life.
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 namespace statarb {
@@ -43,5 +44,27 @@ std::vector<double> rolling_zscore(const std::vector<double>& s, int window);
 /// \throws std::invalid_argument with fewer than 12 observations, a
 ///         constant series, or non-finite input.
 double half_life(const std::vector<double>& s);
+
+/// Streaming rolling z-score: ring buffer, O(1) per update, no allocation in
+/// update().  Same definition and NaN rules as rolling_zscore, but with running
+/// moments (Welford add, then a sliding replace), so it agrees to about 1e-9
+/// and is NOT bitwise pinned; the batch function stays the trading reference.
+class RollingZ {
+public:
+    /// \throws std::invalid_argument when window < 2.
+    explicit RollingZ(int window);
+    /// Add one observation; returns z, or NaN while warming up / zero variance.
+    /// \throws std::invalid_argument on a non-finite value (state unchanged).
+    double update(double s);
+    int window() const { return window_; }
+
+private:
+    int window_;
+    std::vector<double> buf_;
+    std::size_t head_ = 0;
+    int count_ = 0;
+    double mean_ = 0.0;
+    double m2_ = 0.0;
+};
 
 }  // namespace statarb

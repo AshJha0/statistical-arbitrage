@@ -34,8 +34,9 @@ def test_csv_day_column_must_be_monotone(tmp_path: Path) -> None:
 
 def test_csv_rejects_nonfinite_ragged_and_nonnumeric(tmp_path: Path) -> None:
     for text, msg in (
-        ("day,a\n0,1\n1,nan\n", "non-finite"),
-        ("day,a\n0,1\n1,inf\n", "non-finite"),
+        ("day,a\n0,1\n1,nan\n", "non-numeric"),
+        ("day,a\n0,1\n1,inf\n", "non-numeric"),
+        ("day,a\n0,1\n1,1e999\n", "non-finite"),
         ("day,a\n0,1\n1\n", "ragged"),
         ("day,a\n0,1\n1,abc\n", "non-numeric"),
         ("day,a\n", "empty"),
@@ -66,3 +67,35 @@ def test_config_rejects_nonfinite(tmp_path: Path) -> None:
         load_config(p)
     with pytest.raises(ValueError, match="no such config"):
         load_config(tmp_path / "nope.json")
+
+
+@pytest.mark.parametrize("cell", ["0x10", "1_000", "1f", "1d", "1.5L", "1e", "e5",
+                                  ".", "+", "--1", "1,5e", "Infinity", "NaN", "\u0663"])
+def test_csv_plain_number_grammar_only(tmp_path: Path, cell: str) -> None:
+    p = tmp_path / "bad.csv"
+    p.write_text(f"a,b\n1,{cell}\n", encoding="utf8")
+    with pytest.raises(ValueError):
+        load_csv(p)
+
+
+@pytest.mark.parametrize("cell,value", [("1", 1.0), ("-1.5", -1.5), ("+2.", 2.0),
+                                        (".5", 0.5), ("1e3", 1000.0), ("2.5E-1", 0.25)])
+def test_csv_accepts_plain_numbers(tmp_path: Path, cell: str, value: float) -> None:
+    assert load_csv(_write(tmp_path, "ok.csv", f"a\n{cell}\n"))["a"][0] == value
+
+
+@pytest.mark.parametrize("cell", ["1.0", "1.5", "1e0"])
+def test_csv_day_cells_must_be_integers(tmp_path: Path, cell: str) -> None:
+    with pytest.raises(ValueError, match="non-numeric"):
+        load_csv(_write(tmp_path, "d.csv", f"day,a\n0,1\n{cell},2\n"))
+
+
+@pytest.mark.parametrize("text", [
+    '{"window": 60} trailing', '{"window": 60}{"a": 1}', '{"window": 60.0}',
+    '{"window": 6e1}', '{"max_hold_days": 1.5}', '{"cooldown_days": 2.0}',
+    '{"adf_maxlag": 1.0}', '{"a": 0x10}', '{"a": 1_000}', '{"a": 1f}',
+    '{"a": 1e999}', '{"a": 1' + '0' * 400 + '}',
+])
+def test_config_strict(tmp_path: Path, text: str) -> None:
+    with pytest.raises(ValueError):
+        load_config(_write(tmp_path, "c.json", text))

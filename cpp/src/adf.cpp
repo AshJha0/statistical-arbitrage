@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -149,6 +150,43 @@ ADFResult adf_test(const std::vector<double>& y, int maxlag, int nvars) {
     res.nobs = rows;
     res.nvars = nvars;
     return res;
+}
+
+}  // namespace statarb
+
+namespace statarb {
+
+int select_lag(const std::vector<double>& y, int max_lag, int nvars) {
+    adf_test(y, max_lag, nvars);  // shared validation
+    const std::size_t t_len = y.size();
+    const std::size_t m = static_cast<std::size_t>(max_lag);
+    std::vector<double> dy(t_len - 1);
+    for (std::size_t t = 1; t < t_len; ++t) dy[t - 1] = y[t] - y[t - 1];
+    const std::size_t n = dy.size() - m;
+    std::vector<double> lhs(n);
+    for (std::size_t i = 0; i < n; ++i) lhs[i] = dy[m + i];
+    const double ln_n = std::log(static_cast<double>(n));
+
+    int best_lag = 0;
+    double best_bic = std::numeric_limits<double>::infinity();
+    for (std::size_t p = 0; p <= m; ++p) {
+        Matrix x(n, 1 + p);
+        for (std::size_t i = 0; i < n; ++i) {
+            x(i, 0) = y[m + i];  // y_{t-1}
+            for (std::size_t lag = 1; lag <= p; ++lag) x(i, lag) = dy[m - lag + i];
+        }
+        const OLSResult fit = ols(lhs, x, /*intercept=*/true);
+        double rss = 0.0;
+        for (double e : fit.resid) rss += e * e;
+        const double fit_term = rss > 0.0 ? static_cast<double>(n) * std::log(rss / static_cast<double>(n))
+                                          : -std::numeric_limits<double>::infinity();
+        const double bic = fit_term + static_cast<double>(2 + p) * ln_n;
+        if (bic < best_bic || p == 0) {
+            best_lag = static_cast<int>(p);
+            best_bic = bic;
+        }
+    }
+    return best_lag;
 }
 
 }  // namespace statarb

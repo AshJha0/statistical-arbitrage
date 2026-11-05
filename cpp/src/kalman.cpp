@@ -6,6 +6,70 @@
 
 namespace statarb {
 
+namespace {
+void check_params(double delta, double r) {
+    if (!(delta > 0.0 && delta < 1.0)) {
+        throw std::invalid_argument("delta must lie strictly inside (0, 1)");
+    }
+    // Negated comparisons so NaN fails; +inf is rejected explicitly.
+    if (!(r > 0.0) || !std::isfinite(r)) {
+        throw std::invalid_argument("observation variance r must be > 0 and finite");
+    }
+}
+}  // namespace
+
+KalmanStep::KalmanStep(double delta, double r) : q_(0.0), r_(r) {
+    check_params(delta, r);
+    q_ = delta / (1.0 - delta);  // RiskMetrics-style Q scale
+}
+
+Matrix KalmanStep::covariance() const {
+    Matrix m(2, 2);
+    m(0, 0) = p00_;
+    m(0, 1) = p01_;
+    m(1, 0) = p01_;
+    m(1, 1) = p11_;
+    return m;
+}
+
+KalmanOut KalmanStep::update(double x, double y) {
+    if (!(std::isfinite(x) && std::isfinite(y))) {
+        throw std::invalid_argument("inputs must be finite (no NaN/inf)");
+    }
+    const double r = r_;
+    // Scalar order pinned (API_SPEC section 6).
+    const double p00 = p00_ + q_;
+    const double p01 = p01_;
+    const double p11 = p11_ + q_;
+    const double e = y - (a_ + x * b_);
+    const double ph0 = p00 + p01 * x;  // P_pred H'
+    const double ph1 = p01 + p11 * x;
+    const double s = ph0 + x * ph1 + r;
+    const double k0 = ph0 / s;
+    const double k1 = ph1 / s;
+    a_ += k0 * e;
+    b_ += k1 * e;
+    // Joseph form with A = I - K H
+    const double a00 = 1.0 - k0;
+    const double a01 = -k0 * x;
+    const double a10 = -k1;
+    const double a11 = 1.0 - k1 * x;
+    const double b00 = a00 * p00 + a01 * p01;  // B = A P_pred
+    const double b01 = a00 * p01 + a01 * p11;
+    const double b10 = a10 * p00 + a11 * p01;
+    const double b11 = a10 * p01 + a11 * p11;
+    const double n00 = b00 * a00 + b01 * a01 + r * (k0 * k0);
+    const double n01 = b00 * a10 + b01 * a11 + r * (k0 * k1);
+    const double n10 = b10 * a00 + b11 * a01 + r * (k1 * k0);
+    const double n11 = b10 * a10 + b11 * a11 + r * (k1 * k1);
+    p00_ = n00;
+    p01_ = 0.5 * (n01 + n10);
+    p11_ = n11;
+    innovation_ = e;
+    s_var_ = s;
+    return KalmanOut{a_, b_, e / std::sqrt(s)};
+}
+
 KalmanResult kalman_hedge(const std::vector<double>& y,
                           const std::vector<double>& x,
                           double delta, double r) {
@@ -20,76 +84,26 @@ KalmanResult kalman_hedge(const std::vector<double>& y,
     if (!all_finite(y) || !all_finite(x)) {
         throw std::invalid_argument("inputs must be finite (no NaN/inf)");
     }
-    if (!(delta > 0.0 && delta < 1.0)) {
-        throw std::invalid_argument("delta must lie strictly inside (0, 1)");
-    }
-    // Negated comparisons so NaN fails; +inf is rejected explicitly.
-    if (!(r > 0.0) || !std::isfinite(r)) {
-        throw std::invalid_argument("observation variance r must be > 0 and finite");
-    }
+    check_params(delta, r);
 
     const std::size_t t_len = y.size();
-    const double q = delta / (1.0 - delta);  // RiskMetrics-style Q scale
-    double s0 = 0.0, s1 = 0.0;               // state (alpha, beta)
-    // Posterior covariance P, kept symmetric; pinned prior 1e3 * I.
-    double p00 = kP0Scale, p01 = 0.0, p11 = kP0Scale;
-
+    KalmanStep step(delta, r);
     KalmanResult res;
     res.alpha.resize(t_len);
     res.beta.resize(t_len);
     res.z.resize(t_len);
     res.innovation.resize(t_len);
     res.s_var.resize(t_len);
-
+    // One recursion for batch and streaming, so the two cannot diverge.
     for (std::size_t t = 0; t < t_len; ++t) {
-        // Predict: state unchanged, P_pred = P + Q.
-        const double pp00 = p00 + q;
-        const double pp01 = p01;
-        const double pp11 = p11 + q;
-        const double xt = x[t];
-        // Innovation e = y - H s with H = [1, x_t].
-        const double e = y[t] - (s0 + s1 * xt);
-        // Innovation variance S = H P_pred H' + r.
-        const double ph0 = pp00 + pp01 * xt;  // (P_pred H')_0
-        const double ph1 = pp01 + pp11 * xt;  // (P_pred H')_1
-        const double s_var = ph0 + ph1 * xt + r;
-        // Gain K = P_pred H' / S.
-        const double k0 = ph0 / s_var;
-        const double k1 = ph1 / s_var;
-        s0 += k0 * e;
-        s1 += k1 * e;
-        // Joseph form: P = (I - K H) P_pred (I - K H)' + K r K'.
-        const double i00 = 1.0 - k0;        // (I - K H) entries
-        const double i01 = -k0 * xt;
-        const double i10 = -k1;
-        const double i11 = 1.0 - k1 * xt;
-        // M = (I - K H) P_pred
-        const double m00 = i00 * pp00 + i01 * pp01;
-        const double m01 = i00 * pp01 + i01 * pp11;
-        const double m10 = i10 * pp00 + i11 * pp01;
-        const double m11 = i10 * pp01 + i11 * pp11;
-        // P = M (I - K H)' + r K K'
-        double n00 = m00 * i00 + m01 * i01 + r * k0 * k0;
-        double n01 = m00 * i10 + m01 * i11 + r * k0 * k1;
-        double n10 = m10 * i00 + m11 * i01 + r * k1 * k0;
-        double n11 = m10 * i10 + m11 * i11 + r * k1 * k1;
-        // Symmetrise against rounding.
-        p00 = n00;
-        p01 = 0.5 * (n01 + n10);
-        p11 = n11;
-
-        res.alpha[t] = s0;
-        res.beta[t] = s1;
-        res.innovation[t] = e;
-        res.s_var[t] = s_var;
-        res.z[t] = e / std::sqrt(s_var);
+        const KalmanOut o = step.update(x[t], y[t]);
+        res.alpha[t] = o.alpha;
+        res.beta[t] = o.beta;
+        res.z[t] = o.z;
+        res.innovation[t] = step.innovation();
+        res.s_var[t] = step.s_var();
     }
-
-    res.final_cov = Matrix(2, 2);
-    res.final_cov(0, 0) = p00;
-    res.final_cov(0, 1) = p01;
-    res.final_cov(1, 0) = p01;
-    res.final_cov(1, 1) = p11;
+    res.final_cov = step.covariance();
     return res;
 }
 

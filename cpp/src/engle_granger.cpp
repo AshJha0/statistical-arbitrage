@@ -17,4 +17,12 @@ EGResult engle_granger(const std::vector<double>& y,
     return res;
 }
 
+EGBothResult engle_granger_both(const std::vector<double>& y,
+                                const std::vector<double>& x, int maxlag) {
+    EGBothResult r;
+    r.y_on_x = engle_granger(y, x, maxlag);
+    r.x_on_y = engle_granger(x, y, maxlag);
+    return r;
+}
 }  // namespace statarb
+

@@ -3,22 +3,25 @@ flowchart TD
         CSV["pair_equity.csv / fx_triangle.csv / random_walks.csv"]
         CFG["config.json"]
     end
-    CSV --> IO["data_io: load_csv\n(finite cells, monotone day column)"]
-    CFG --> IOC["data_io: load_config"]
-    IO --> EG["engle_granger\n(hedge alpha, beta + residual ADF)"]
+    CSV --> IO["data_io: load_csv\n(strict number grammar, finite cells,\nmonotone day column)"]
+    CFG --> IOC["data_io: load_config\n(no trailing content, integer window/days)"]
+    IO --> EG["engle_granger / engle_granger_both\n(hedge alpha, beta + residual ADF,\noptional select_lag)"]
     IO --> JO["johansen_trace\n(rank, cointegrating vectors)"]
-    IO --> KF["kalman_hedge\n(dynamic alpha_t, beta_t, innovations)"]
+    IO --> KF["kalman_hedge / KalmanStep\n(dynamic alpha_t, beta_t, innovations)"]
     EG -- "not cointegrated" --> STOPX["no trade\n(spurious pair rejected)"]
-    EG -- "alpha, beta" --> SPR["signals: spread\ns = y - (a + b x)"]
+    EG -- "alpha, beta (must be > 0)" --> SPR["signals: spread\ns = y - (a + b x)"]
     EG -- "residuals" --> HL["signals: half_life"]
-    SPR --> Z["signals: rolling_zscore\n(window W, ddof 1)"]
-    IOC --> BTCFG["BacktestConfig\n(validated thresholds, costs)"]
+    SPR --> Z["signals: rolling_zscore / RollingZ\n(window W, ddof 1, sequential sums)"]
+    IOC --> BTCFG["BacktestConfig\n(thresholds, costs, sizing,\npnl_stop_frac, max_hold_days, cooldown_days;\nreject dead windows)"]
     Z --> BT["backtest_pair\nstate machine + accounting"]
     BTCFG --> BT
-    BT --> MET["metrics: return, Sharpe,\nmaxDD, trades, turnover"]
-    IO --> WF["walk_forward\n(60% fit / 40% trade)"]
+    BT --> MET["metrics: return, Sharpe,\nmaxDD, trades, turnover, stops"]
+    IO --> WF["walk_forward\n(single holdout: 60% fit / 40% trade)"]
+    IO --> RWF["rolling_walk_forward\n(refit every test days on last train days,\nflat at block ends, stitched equity)"]
     WF --> BT
-    MET --> GOLD["golden.json\n24 cross-language cases"]
+    RWF --> BT
+    MET --> RES["research.py (Python only)\nbootstrap CI, deflated Sharpe, CUSUM,\nBH, scan_pairs"]
+    MET --> GOLD["golden.json\n928 cross-language cases"]
     JO --> GOLD
     KF --> GOLD
     HL --> GOLD

@@ -44,15 +44,16 @@ std::vector<double> rolling_zscore(const std::vector<double>& s, int window) {
     const std::size_t w = static_cast<std::size_t>(window);
     std::vector<double> z(t_len, std::numeric_limits<double>::quiet_NaN());
     for (std::size_t t = w - 1; t < t_len; ++t) {
-        NeumaierSum sum;
-        for (std::size_t i = t - w + 1; i <= t; ++i) sum.add(s[i]);
-        const double mean = sum.value() / static_cast<double>(w);
-        NeumaierSum acc;
+        // PINNED: plain sequential left-to-right sums (no Neumaier/Kahan).
+        double total = 0.0;
+        for (std::size_t i = t - w + 1; i <= t; ++i) total += s[i];
+        const double mean = total / static_cast<double>(w);
+        double ss = 0.0;
         for (std::size_t i = t - w + 1; i <= t; ++i) {
             const double d = s[i] - mean;
-            acc.add(d * d);
+            ss += d * d;
         }
-        const double sd = std::sqrt(acc.value() / static_cast<double>(w - 1));
+        const double sd = std::sqrt(ss / static_cast<double>(w - 1));
         if (sd > kZscoreStdFloor) z[t] = (s[t] - mean) / sd;
     }
     return z;
@@ -80,6 +81,40 @@ double half_life(const std::vector<double>& s) {
     if (rho >= 0.0) return std::numeric_limits<double>::infinity();
     if (1.0 + rho <= 0.0) return 0.0;
     return -std::log(2.0) / std::log(1.0 + rho);
+}
+
+}  // namespace statarb
+
+namespace statarb {
+
+RollingZ::RollingZ(int window) : window_(window) {
+    if (window < 2) throw std::invalid_argument("window must be an integer >= 2");
+    buf_.assign(static_cast<std::size_t>(window), 0.0);
+}
+
+double RollingZ::update(double s) {
+    if (!std::isfinite(s)) {
+        throw std::invalid_argument("inputs must be finite (no NaN/inf)");
+    }
+    const double w = static_cast<double>(window_);
+    if (count_ < window_) {
+        ++count_;
+        const double delta = s - mean_;
+        mean_ += delta / static_cast<double>(count_);
+        m2_ += delta * (s - mean_);
+    } else {
+        const double old = buf_[head_];
+        const double old_mean = mean_;
+        mean_ = old_mean + (s - old) / w;
+        m2_ += (s - old) * (s - mean_ + old - old_mean);
+        if (m2_ < 0.0) m2_ = 0.0;
+    }
+    buf_[head_] = s;
+    head_ = (head_ + 1) % static_cast<std::size_t>(window_);
+    if (count_ < window_) return std::numeric_limits<double>::quiet_NaN();
+    const double sd = std::sqrt(m2_ / (w - 1.0));
+    if (sd > kZscoreStdFloor) return (s - mean_) / sd;
+    return std::numeric_limits<double>::quiet_NaN();
 }
 
 }  // namespace statarb

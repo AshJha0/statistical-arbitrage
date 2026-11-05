@@ -1,12 +1,13 @@
 package com.quant.statarb;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Dollar-neutral pairs backtest — state machine and accounting (PINNED).
+ * Pairs backtest — state machine and accounting (PINNED).
  *
  * <p>Timing convention (pinned, no look-ahead): the signal computed from the
  * day-t CLOSE is executed at the day t+1 CLOSE at day t+1 prices. Daily P&amp;L
@@ -24,18 +25,24 @@ import java.util.Map;
  * <p>State machine (states FLAT / LONG spread / SHORT spread, plus at most one
  * pending order):
  * <ul>
- *   <li>FLAT, signal day t: {@code entry_z <= z_t < stop_z} -&gt; pending SHORT
- *       entry; {@code -stop_z < z_t <= -entry_z} -&gt; pending LONG entry
- *       ({@code |z_t| >= stop_z} while flat: no entry, pinned; NaN z: no
- *       action).</li>
- *   <li>In position, signal day t: {@code |z_t| >= stop_z} -&gt; pending STOP
- *       exit; else {@code |z_t| <= exit_z} -&gt; pending exit.</li>
- *   <li>Execution day t+1 close. Entry legs are EQUAL-DOLLAR (pinned):
- *       {@code q_y = dir * (capital/2) / y}, {@code q_x = -dir * (capital/2) / x}
- *       with dir = +1 for LONG spread (long y / short x), -1 for SHORT. The
- *       hedge ratio enters through the spread/signal; sizing is equal-dollar so
- *       the position is exactly dollar-neutral at entry. Quantities are then
- *       held fixed (no daily rebalance).</li>
+ *   <li>FLAT, signal day t (and {@code t >= e + cooldownDays} for the latest
+ *       stopped exit executed on day e): {@code entry_z <= z_t < stop_z} -&gt;
+ *       pending SHORT entry; {@code -stop_z < z_t <= -entry_z} -&gt; pending
+ *       LONG entry ({@code |z_t| >= stop_z} while flat: no entry, pinned; NaN z:
+ *       no action).</li>
+ *   <li>In position, signal day t, first match wins: (1) open trade P&amp;L
+ *       (net of costs so far) {@code <= -pnlStopFrac * capital} -&gt; STOP;
+ *       (2) {@code |z_t| >= stop_z} -&gt; STOP; (3)
+ *       {@code t - entryDay >= maxHoldDays} -&gt; exit (not a stop); (4)
+ *       {@code |z_t| <= exit_z} -&gt; exit. Rules 1 and 3 do not read z, so they
+ *       fire on a NaN z. A limit of 0 is off.</li>
+ *   <li>Execution day t+1 close, dir = +1 for LONG spread (long y / short x),
+ *       -1 for SHORT. Sizing {@code beta_hedged} (default):
+ *       {@code u = capital / (y + beta*x)}, {@code q_y = dir*u},
+ *       {@code q_x = -dir*beta*u}; {@code equal_dollar}:
+ *       {@code q_y = dir*(capital/2)/y}, {@code q_x = -dir*(capital/2)/x}. Gross
+ *       notional is capital at entry either way. Quantities are then held fixed
+ *       (no daily rebalance).</li>
  *   <li>Costs are charged on traded notional {@code |dq_y| y + |dq_x| x} at the
  *       execution close, both entry and exit.</li>
  *   <li>A position still open at the final day is force-closed at the final
@@ -60,27 +67,46 @@ public final class Backtest {
     private Backtest() {
     }
 
+    /** Accepted {@link Config#sizing()} name (default). */
+    public static final String BETA_HEDGED = "beta_hedged";
+    /** Accepted {@link Config#sizing()} name. */
+    public static final String EQUAL_DOLLAR = "equal_dollar";
+
+    /** Largest |z| a W-point sample can give its own latest point (ddof=1). */
+    public static double maxAbsZscore(int window) {
+        return (window - 1) / Math.sqrt(window);
+    }
+
     /**
-     * Signal / cost parameters for the pairs backtest, validated on
+     * Signal / cost / risk parameters for the pairs backtest, validated on
      * construction.
      *
-     * @param window      rolling z-score window W (&ge; 2)
-     * @param entryZ      enter when |z| &ge; entryZ (and &lt; stopZ)
-     * @param exitZ       exit when |z| &le; exitZ
-     * @param stopZ       stop-loss when |z| &ge; stopZ
-     * @param costBps     commission, basis points of traded notional
-     * @param slippageBps slippage, basis points of traded notional
-     * @param capital     gross capital; each leg is sized to capital/2 at entry
+     * @param window       rolling z-score window W (&ge; 2)
+     * @param entryZ       enter when |z| &ge; entryZ (and &lt; stopZ)
+     * @param exitZ        exit when |z| &le; exitZ
+     * @param stopZ        stop-loss when |z| &ge; stopZ
+     * @param costBps      commission, basis points of traded notional
+     * @param slippageBps  slippage, basis points of traded notional
+     * @param capital      gross capital at entry
+     * @param sizing       "beta_hedged" or "equal_dollar"
+     * @param pnlStopFrac  stop when open trade P&amp;L &le; -frac*capital; 0 = off
+     * @param maxHoldDays  exit when held this many days; 0 = off
+     * @param cooldownDays no entry signal for this many days after a stopped
+     *                     exit; 0 = off
      */
     public record Config(int window, double entryZ, double exitZ, double stopZ,
-                         double costBps, double slippageBps, double capital) {
+                         double costBps, double slippageBps, double capital,
+                         String sizing, double pnlStopFrac, int maxHoldDays,
+                         int cooldownDays) {
 
         /**
          * Validates the pinned parameter constraints.
          *
          * @throws IllegalArgumentException when window &lt; 2, any threshold or
          *     cost is NaN/infinite, the ordering is violated, costs are negative,
-         *     or capital is not positive and finite
+         *     capital is not positive and finite, sizing is unknown, a risk
+         *     limit is negative or non-finite, or the config is dead (entry_z
+         *     unreachable, or stop_z unreachable without a P&amp;L stop)
          */
         public Config {
             if (window < 2) {
@@ -99,6 +125,62 @@ public final class Backtest {
             if (!(capital > 0.0 && Double.isFinite(capital))) {
                 throw new IllegalArgumentException("capital must be positive and finite");
             }
+            if (!(BETA_HEDGED.equals(sizing) || EQUAL_DOLLAR.equals(sizing))) {
+                throw new IllegalArgumentException(
+                        "sizing must be 'beta_hedged' or 'equal_dollar'");
+            }
+            if (!(Double.isFinite(pnlStopFrac) && pnlStopFrac >= 0.0)) {
+                throw new IllegalArgumentException("pnl_stop_frac must be finite and >= 0");
+            }
+            if (maxHoldDays < 0) {
+                throw new IllegalArgumentException("max_hold_days must be an integer >= 0");
+            }
+            if (cooldownDays < 0) {
+                throw new IllegalArgumentException("cooldown_days must be an integer >= 0");
+            }
+            double reach = maxAbsZscore(window);
+            if (reach <= entryZ) {
+                throw new IllegalArgumentException(
+                        "entry_z unreachable: window " + window + " caps |z| at " + reach);
+            }
+            if (reach <= stopZ && !(pnlStopFrac > 0.0)) {
+                throw new IllegalArgumentException(
+                        "stop_z unreachable: window " + window + " caps |z| at " + reach
+                                + "; allowed only with pnl_stop_frac > 0");
+            }
+        }
+
+        /** Beta-hedged sizing, all risk limits off. */
+        public Config(int window, double entryZ, double exitZ, double stopZ,
+                      double costBps, double slippageBps, double capital) {
+            this(window, entryZ, exitZ, stopZ, costBps, slippageBps, capital,
+                    BETA_HEDGED, 0.0, 0, 0);
+        }
+
+        /** Copy with another sizing mode. */
+        public Config withSizing(String newSizing) {
+            return new Config(window, entryZ, exitZ, stopZ, costBps, slippageBps, capital,
+                    newSizing, pnlStopFrac, maxHoldDays, cooldownDays);
+        }
+
+        /** Copy with other risk limits. */
+        public Config withLimits(double newPnlStopFrac, int newMaxHoldDays,
+                                 int newCooldownDays) {
+            return new Config(window, entryZ, exitZ, stopZ, costBps, slippageBps, capital,
+                    sizing, newPnlStopFrac, newMaxHoldDays, newCooldownDays);
+        }
+
+        /**
+         * Build from a {@link DataIo#loadConfig} map; absent risk limits are
+         * off, sizing is beta_hedged.
+         */
+        public static Config fromMap(Map<String, Double> c) {
+            return new Config(c.get("window").intValue(), c.get("entry_z"), c.get("exit_z"),
+                    c.get("stop_z"), c.get("cost_bps"), c.get("slippage_bps"),
+                    c.get("capital"), BETA_HEDGED,
+                    c.getOrDefault("pnl_stop_frac", 0.0),
+                    c.getOrDefault("max_hold_days", 0.0).intValue(),
+                    c.getOrDefault("cooldown_days", 0.0).intValue());
         }
     }
 
@@ -246,10 +328,20 @@ public final class Backtest {
      * @param beta   hedge ratio defining the spread
      * @param config validated signal/cost parameters
      * @throws IllegalArgumentException on length mismatch, non-finite or
-     *     non-positive prices, or window larger than the series
+     *     non-positive prices, beta &le; 0 or NaN, or window larger than the series
      */
     public static Result run(double[] y, double[] x, double alpha, double beta,
                              Config config) {
+        return runFrom(y, x, alpha, beta, config, 0);
+    }
+
+    /** State machine; entry signals are ignored before {@code firstEntrySignal}. */
+    private static Result runFrom(double[] y, double[] x, double alpha, double beta,
+                                  Config config, int firstEntrySignal) {
+        if (!(beta > 0.0)) {
+            throw new IllegalArgumentException(
+                    "beta must be > 0: negative hedges are out of scope");
+        }
         if (y.length != x.length) {
             throw new IllegalArgumentException("y and x must be 1-D arrays of equal length");
         }
@@ -278,6 +370,7 @@ public final class Backtest {
         double qx = 0.0;
         // pending order: 0 = none, +1/-1 = enter long/short, 2 = exit, 3 = stop exit
         int pending = 0;
+        int noEntryBefore = firstEntrySignal; // also moved by the cool-down
         int openEntryDay = -1;
         int openDir = 0;
         double openPnl = 0.0;
@@ -298,8 +391,14 @@ public final class Backtest {
             if (pending != 0) {
                 if ((pending == 1 || pending == -1) && state == FLAT && t < n - 1) {
                     int dir = pending;
-                    qy = dir * (cap / 2.0) / y[t];
-                    qx = -dir * (cap / 2.0) / x[t];
+                    if (BETA_HEDGED.equals(config.sizing())) {
+                        double u = cap / (y[t] + beta * x[t]);
+                        qy = dir * u;
+                        qx = -dir * beta * u;
+                    } else {
+                        qy = dir * (cap / 2.0) / y[t];
+                        qx = -dir * (cap / 2.0) / x[t];
+                    }
                     double traded = Math.abs(qy) * y[t] + Math.abs(qx) * x[t];
                     cost += traded * bps;
                     turnoverNotional += traded;
@@ -313,6 +412,9 @@ public final class Backtest {
                     turnoverNotional += traded;
                     openPnl -= traded * bps;
                     trades.add(new Trade(openEntryDay, t, openDir, openPnl, pending == 3));
+                    if (pending == 3) {
+                        noEntryBefore = Math.max(noEntryBefore, t + config.cooldownDays());
+                    }
                     qy = 0.0;
                     qx = 0.0;
                     state = FLAT;
@@ -340,20 +442,25 @@ public final class Backtest {
             // 3) generate the order to execute at the day t+1 close
             if (t < n - 1) {
                 double zt = z[t];
-                if (!Double.isNaN(zt)) {
-                    if (state == FLAT) {
+                boolean zOk = !Double.isNaN(zt);
+                if (state == FLAT) {
+                    if (zOk && t >= noEntryBefore) {
                         if (config.entryZ() <= zt && zt < config.stopZ()) {
                             pending = -1;
                         } else if (-config.stopZ() < zt && zt <= -config.entryZ()) {
                             pending = 1;
                         }
-                    } else {
-                        if (Math.abs(zt) >= config.stopZ()) {
-                            pending = 3;
-                        } else if (Math.abs(zt) <= config.exitZ()) {
-                            pending = 2;
-                        }
                     }
+                } else if (config.pnlStopFrac() > 0.0
+                        && openPnl <= -config.pnlStopFrac() * cap) {
+                    pending = 3;
+                } else if (zOk && Math.abs(zt) >= config.stopZ()) {
+                    pending = 3;
+                } else if (config.maxHoldDays() > 0
+                        && t - openEntryDay >= config.maxHoldDays()) {
+                    pending = 2;
+                } else if (zOk && Math.abs(zt) <= config.exitZ()) {
+                    pending = 2;
                 }
             }
         }
@@ -367,6 +474,9 @@ public final class Backtest {
      * Estimate the hedge on the first {@code insampleFrac} of days by OLS,
      * backtest that segment in-sample, then trade the remainder out-of-sample
      * with the SAME (alpha, beta) — degradation on display.
+     *
+     * <p>This is a SINGLE HOLDOUT (one fit, one split); the name is kept for
+     * compatibility, see {@link #rollingWalkForward} for the refitting version.
      *
      * <p>{@code split = floor(T * insampleFrac + SPLIT_EPS)} (pinned). The
      * out-of-sample z-score warms up inside the OOS segment only (no
@@ -388,14 +498,144 @@ public final class Backtest {
         if (split < config.window() || y.length - split < config.window()) {
             throw new IllegalArgumentException("each walk-forward segment must cover the z window");
         }
-        double[] yIn = java.util.Arrays.copyOfRange(y, 0, split);
-        double[] xIn = java.util.Arrays.copyOfRange(x, 0, split);
+        double[] yIn = Arrays.copyOfRange(y, 0, split);
+        double[] xIn = Arrays.copyOfRange(x, 0, split);
         Ols.Result fit = Ols.fit(yIn, xIn, true);
         double a = fit.params()[0];
         double b = fit.params()[1];
         Result ins = run(yIn, xIn, a, b, config);
-        Result oos = run(java.util.Arrays.copyOfRange(y, split, y.length),
-                java.util.Arrays.copyOfRange(x, split, x.length), a, b, config);
+        Result oos = run(Arrays.copyOfRange(y, split, y.length),
+                Arrays.copyOfRange(x, split, x.length), a, b, config);
         return new WalkForwardResult(a, b, ins, oos, split);
+    }
+
+    /**
+     * One rolling test block: days [start, end) traded with a fit from before
+     * start. {@code result} covers the block days only (trade days are absolute).
+     *
+     * @param start   first block day
+     * @param end     one past the last block day
+     * @param alpha   fitted intercept
+     * @param beta    fitted hedge ratio
+     * @param skipped true when the fit gave beta &le; 0 or NaN and the block stays flat
+     * @param result  block backtest trimmed to days [start, end)
+     */
+    public record RollingBlock(int start, int end, double alpha, double beta,
+                               boolean skipped, Result result) {
+    }
+
+    /**
+     * Stitched rolling walk-forward; {@code equity[i]} is day {@code startDay + i}.
+     *
+     * @param blocks   per-block results
+     * @param startDay first stitched day (= train)
+     * @param equity   stitched equity curve
+     * @param trades   all blocks' trades
+     * @param metrics  metrics of the stitched curve (turnover = sum of blocks)
+     */
+    public record RollingResult(List<RollingBlock> blocks, int startDay, double[] equity,
+                                List<Trade> trades, Map<String, Double> metrics) {
+
+        /** Number of stopped trades across all blocks. */
+        public int nStops() {
+            int c = 0;
+            for (Trade t : trades) {
+                if (t.stopped()) {
+                    c++;
+                }
+            }
+            return c;
+        }
+    }
+
+    /**
+     * Refit on a rolling window and trade only the days after each fit.
+     *
+     * <p>For k = 0, 1, .. while {@code k*test + train < T}: OLS on
+     * {@code [k*test, k*test+train)}, trade {@code [start, end)} with
+     * {@code start = k*test+train}, {@code end = min(start+test, T)}. Each block
+     * is its own backtest on the W-1 prior days plus the block, entries ignored
+     * before {@code start}, flat at block end (forced close, not a stop),
+     * cool-down not carried. A block with beta &le; 0 or NaN stays flat and is
+     * marked skipped.
+     *
+     * @throws IllegalArgumentException on length mismatch, test &lt; 1,
+     *     train &lt; window, or train &ge; T
+     */
+    public static RollingResult rollingWalkForward(double[] y, double[] x, Config config,
+                                                   int train, int test) {
+        if (y.length != x.length) {
+            throw new IllegalArgumentException("y and x must be 1-D arrays of equal length");
+        }
+        if (test < 1) {
+            throw new IllegalArgumentException("test must be >= 1");
+        }
+        if (train < config.window()) {
+            throw new IllegalArgumentException("train must cover the z window");
+        }
+        int n = y.length;
+        if (train >= n) {
+            throw new IllegalArgumentException("train must be shorter than the series");
+        }
+        double cap = config.capital();
+        int warm = config.window() - 1;
+        List<RollingBlock> blocks = new ArrayList<>();
+        List<Trade> trades = new ArrayList<>();
+        double[] stitched = new double[n - train];
+        int filled = 0;
+        double running = cap;
+        double turnover = 0.0;
+        for (long k = 0; k * test + train < n; k++) {
+            int fitLo = (int) (k * test);
+            int start = fitLo + train;
+            int end = (int) Math.min((long) start + test, n);
+            Ols.Result fit = Ols.fit(Arrays.copyOfRange(y, fitLo, start),
+                    Arrays.copyOfRange(x, fitLo, start), true);
+            double a = fit.params()[0];
+            double b = fit.params()[1];
+            boolean skipped = !(b > 0.0);
+            Result res;
+            if (skipped) {
+                res = flatBlock(end - start, cap);
+            } else {
+                int lo = start - warm;
+                Result full = runFrom(Arrays.copyOfRange(y, lo, end),
+                        Arrays.copyOfRange(x, lo, end), a, b, config, warm);
+                List<Trade> bt = new ArrayList<>();
+                for (Trade t : full.trades()) {
+                    bt.add(new Trade(t.entryDay() + lo, t.exitDay() + lo, t.direction(),
+                            t.pnl(), t.stopped()));
+                }
+                double[] eq = Arrays.copyOfRange(full.equity(), warm, full.equity().length);
+                Map<String, Double> m = computeMetrics(eq, cap, bt);
+                m.put("turnover", full.metrics().get("turnover"));
+                res = new Result(eq,
+                        Arrays.copyOfRange(full.dailyPnl(), warm, full.dailyPnl().length),
+                        Arrays.copyOfRange(full.dailyCost(), warm, full.dailyCost().length),
+                        Arrays.copyOfRange(full.zscore(), warm, full.zscore().length),
+                        bt, m);
+            }
+            blocks.add(new RollingBlock(start, end, a, b, skipped, res));
+            trades.addAll(res.trades());
+            for (double e : res.equity()) {
+                stitched[filled++] = running + (e - cap);
+            }
+            running = stitched[filled - 1];
+            turnover += res.metrics().get("turnover");
+        }
+        Map<String, Double> metrics = computeMetrics(stitched, cap, trades);
+        metrics.put("turnover", turnover);
+        return new RollingResult(blocks, train, stitched, trades, metrics);
+    }
+
+    private static Result flatBlock(int n, double cap) {
+        double[] eq = new double[n];
+        Arrays.fill(eq, cap);
+        double[] z = new double[n];
+        Arrays.fill(z, Double.NaN);
+        List<Trade> none = new ArrayList<>();
+        Map<String, Double> m = computeMetrics(eq, cap, none);
+        m.put("turnover", 0.0);
+        return new Result(eq, new double[n], new double[n], z, none, m);
     }
 }

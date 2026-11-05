@@ -56,10 +56,7 @@ public final class Demo {
         double[] x = pair.get("stock_x");
         int nIs = (int) Math.floor(y.length * cfg.get("insample_frac") + Backtest.SPLIT_EPS);
         int maxlag = cfg.get("adf_maxlag").intValue();
-        Backtest.Config btCfg = new Backtest.Config(
-                cfg.get("window").intValue(), cfg.get("entry_z"), cfg.get("exit_z"),
-                cfg.get("stop_z"), cfg.get("cost_bps"), cfg.get("slippage_bps"),
-                cfg.get("capital"));
+        Backtest.Config btCfg = Backtest.Config.fromMap(cfg);
 
         System.out.println("statarb demo — cointegration, Kalman hedging, pairs backtest");
         System.out.printf("pair_equity.csv: %d days, in-sample = first %d days "
@@ -136,6 +133,11 @@ public final class Demo {
         printMetrics("OOS (40%)", wf.oos());
         System.out.println("  degradation is honest: the OOS window contains the day-1050");
         System.out.println("  break; stop-losses cap the damage of the broken relationship.");
+        System.out.println("  (walk_forward is ONE fit and ONE split; the refitting version follows.)");
+        Backtest.RollingResult rw = Backtest.rollingWalkForward(y, x, btCfg, 500, 100);
+        System.out.printf("  rolling walk-forward (train 500, test 100): %d blocks, "
+                + "total return %.4f, %d trades, %d stops%n", rw.blocks().size(),
+                rw.metrics().get("total_return"), rw.trades().size(), rw.nStops());
 
         rule("4. Spurious-regression teaching case (independent random walks)");
         double[] wa = walks.get("walk_a");

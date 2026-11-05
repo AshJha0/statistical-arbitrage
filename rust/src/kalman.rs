@@ -92,55 +92,21 @@ pub fn kalman_hedge(y: &[f64], x: &[f64], delta: f64, r: f64) -> Result<KalmanRe
     }
 
     let t_len = y.len();
-    let q = delta / (1.0 - delta);
-    let mut s = [0.0_f64; 2];
-    let mut p = [[P0_SCALE, 0.0], [0.0, P0_SCALE]];
-
+    let mut step = KalmanStep::new(delta, r)?;
     let mut alpha = vec![0.0; t_len];
     let mut beta = vec![0.0; t_len];
     let mut z = vec![0.0; t_len];
     let mut innovation = vec![0.0; t_len];
     let mut s_var = vec![0.0; t_len];
 
+    // One recursion for batch and streaming, so the two cannot diverge.
     for t in 0..t_len {
-        // predict: state unchanged, covariance inflated by Q = q I
-        let pp = [[p[0][0] + q, p[0][1]], [p[1][0], p[1][1] + q]];
-        let xt = x[t];
-        // innovate with H = [1, x_t]
-        let e = y[t] - (s[0] + xt * s[1]);
-        // S = H P_pred H' + r, evaluated as (H P_pred) . H (mirrors reference)
-        let hp = [pp[0][0] + xt * pp[1][0], pp[0][1] + xt * pp[1][1]];
-        let s_t = hp[0] + xt * hp[1] + r;
-        // gain K = P_pred H' / S
-        let k = [
-            (pp[0][0] + pp[0][1] * xt) / s_t,
-            (pp[1][0] + pp[1][1] * xt) / s_t,
-        ];
-        s[0] += k[0] * e;
-        s[1] += k[1] * e;
-        // Joseph form: P = (I - K H) P_pred (I - K H)' + r K K'
-        let ikh = [[1.0 - k[0], -k[0] * xt], [-k[1], 1.0 - k[1] * xt]];
-        let mut tmp = [[0.0_f64; 2]; 2]; // ikh @ P_pred
-        for i in 0..2 {
-            for j in 0..2 {
-                tmp[i][j] = ikh[i][0] * pp[0][j] + ikh[i][1] * pp[1][j];
-            }
-        }
-        let mut pn = [[0.0_f64; 2]; 2]; // tmp @ ikh' + r K K'
-        for i in 0..2 {
-            for j in 0..2 {
-                pn[i][j] = tmp[i][0] * ikh[j][0] + tmp[i][1] * ikh[j][1] + r * k[i] * k[j];
-            }
-        }
-        // symmetrise against rounding
-        let off = 0.5 * (pn[0][1] + pn[1][0]);
-        p = [[pn[0][0], off], [off, pn[1][1]]];
-
-        alpha[t] = s[0];
-        beta[t] = s[1];
-        innovation[t] = e;
-        s_var[t] = s_t;
-        z[t] = e / s_t.sqrt();
+        let (a, b, zt) = step.update(x[t], y[t])?;
+        alpha[t] = a;
+        beta[t] = b;
+        z[t] = zt;
+        innovation[t] = step.innovation();
+        s_var[t] = step.s_var();
     }
 
     Ok(KalmanResult {
@@ -149,8 +115,116 @@ pub fn kalman_hedge(y: &[f64], x: &[f64], delta: f64, r: f64) -> Result<KalmanRe
         z,
         innovation,
         s_var,
-        final_cov: p,
+        final_cov: step.covariance(),
     })
+}
+
+/// Streaming form of [`kalman_hedge`]: scalar state, O(1) per update and
+/// no allocation. [`kalman_hedge`] loops over this type; the scalar order
+/// of [`KalmanStep::update`] is pinned in API_SPEC section 6.
+#[derive(Debug, Clone)]
+pub struct KalmanStep {
+    q: f64,
+    r: f64,
+    a: f64,
+    b: f64,
+    p00: f64,
+    p01: f64,
+    p11: f64,
+    innovation: f64,
+    s_var: f64,
+}
+
+impl KalmanStep {
+    /// New filter at the pinned prior.
+    ///
+    /// # Errors
+    ///
+    /// `delta` outside the open interval (0, 1) or `r` not finite and > 0.
+    pub fn new(delta: f64, r: f64) -> Result<Self> {
+        if !(delta > 0.0 && delta < 1.0) {
+            return Err(StatarbError::InvalidParam(
+                "delta must lie strictly inside (0, 1)".to_string(),
+            ));
+        }
+        // Negated comparison so NaN fails; +inf is rejected explicitly.
+        if !(r > 0.0 && r.is_finite()) {
+            return Err(StatarbError::InvalidParam(
+                "observation variance r must be > 0 and finite".to_string(),
+            ));
+        }
+        Ok(KalmanStep {
+            q: delta / (1.0 - delta),
+            r,
+            a: 0.0,
+            b: 0.0,
+            p00: P0_SCALE,
+            p01: 0.0,
+            p11: P0_SCALE,
+            innovation: 0.0,
+            s_var: 0.0,
+        })
+    }
+
+    /// Innovation `e_t` of the latest update.
+    pub fn innovation(&self) -> f64 {
+        self.innovation
+    }
+
+    /// Innovation variance `S_t` of the latest update.
+    pub fn s_var(&self) -> f64 {
+        self.s_var
+    }
+
+    /// Current 2x2 posterior covariance (row-major).
+    pub fn covariance(&self) -> [[f64; 2]; 2] {
+        [[self.p00, self.p01], [self.p01, self.p11]]
+    }
+
+    /// Filter one observation (note the order: `x` first); returns
+    /// `(alpha, beta, z)`.
+    ///
+    /// # Errors
+    ///
+    /// Non-finite `x` or `y` (the state is left unchanged).
+    pub fn update(&mut self, x: f64, y: f64) -> Result<(f64, f64, f64)> {
+        if !(x.is_finite() && y.is_finite()) {
+            return Err(StatarbError::NonFinite(
+                "inputs must be finite (no NaN/inf)".to_string(),
+            ));
+        }
+        let r = self.r;
+        let p00 = self.p00 + self.q;
+        let p01 = self.p01;
+        let p11 = self.p11 + self.q;
+        let e = y - (self.a + x * self.b);
+        let ph0 = p00 + p01 * x; // P_pred H'
+        let ph1 = p01 + p11 * x;
+        let s = ph0 + x * ph1 + r;
+        let k0 = ph0 / s;
+        let k1 = ph1 / s;
+        self.a += k0 * e;
+        self.b += k1 * e;
+        // Joseph form with A = I - K H
+        let a00 = 1.0 - k0;
+        let a01 = -k0 * x;
+        let a10 = -k1;
+        let a11 = 1.0 - k1 * x;
+        let b00 = a00 * p00 + a01 * p01; // B = A P_pred
+        let b01 = a00 * p01 + a01 * p11;
+        let b10 = a10 * p00 + a11 * p01;
+        let b11 = a10 * p01 + a11 * p11;
+        let n00 = b00 * a00 + b01 * a01 + r * (k0 * k0);
+        let n01 = b00 * a10 + b01 * a11 + r * (k0 * k1);
+        let n10 = b10 * a00 + b11 * a01 + r * (k1 * k0);
+        let n11 = b10 * a10 + b11 * a11 + r * (k1 * k1);
+        self.p00 = n00;
+        self.p01 = 0.5 * (n01 + n10);
+        self.p11 = n11;
+        self.innovation = e;
+        self.s_var = s;
+        Ok((self.a, self.b, e / s.sqrt()))
+    }
 }
 
 #[cfg(test)]

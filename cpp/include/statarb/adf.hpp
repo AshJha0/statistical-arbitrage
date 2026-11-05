@@ -109,4 +109,11 @@ struct ADFResult {
 ///         >= max(nparams + 10, kAdfMinNobs)).
 ADFResult adf_test(const std::vector<double>& y, int maxlag = 1, int nvars = 1);
 
+/// Lag in 0..max_lag with the smallest BIC, for use with adf_test.  Every
+/// candidate is fitted on the SAME rows t = max_lag+1 .. T-1, so the BICs
+/// compare: BIC(p) = n ln(RSS_p/n) + (2+p) ln n, n = T - 1 - max_lag.  A tie
+/// goes to the smaller lag.
+/// \throws std::invalid_argument as adf_test(y, max_lag, nvars).
+int select_lag(const std::vector<double>& y, int max_lag, int nvars = 1);
+
 }  // namespace statarb

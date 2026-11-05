@@ -4,8 +4,8 @@ Regression form (PINNED, constant / no-trend case):
 
     dy_t = c + rho * y_{t-1} + sum_{i=1..p} phi_i * dy_{t-i} + e_t
 
-with a FIXED augmentation lag p = ``maxlag`` (default 1; no automatic lag
-selection).  The test statistic is the plain OLS t-statistic on rho.  With
+with a FIXED augmentation lag p = ``maxlag`` (default 1; ``adf_test`` does
+no lag selection, :func:`select_lag` is a separate explicit step).  The test statistic is the plain OLS t-statistic on rho.  With
 T raw observations the regression uses the T_eff = T - 1 - p rows for which
 all lagged differences exist.
 
@@ -64,7 +64,7 @@ RESPONSE_SURFACE: dict[int, tuple[tuple[float, float, float, float], ...]] = {
 #: Kept for callers that want the limiting table; ``adf_test`` always uses
 #: the finite-sample values from :func:`critical_values`.
 CRITICAL_VALUES: dict[int, tuple[float, float, float]] = {
-    n: tuple(row[0] for row in rows) for n, rows in RESPONSE_SURFACE.items()
+    n: (rows[0][0], rows[1][0], rows[2][0]) for n, rows in RESPONSE_SURFACE.items()
 }
 
 #: Significance levels matching the columns of the tables.
@@ -224,3 +224,33 @@ def adf_test(y: np.ndarray, maxlag: int = 1, nvars: int = 1) -> ADFResult:
         nobs=eff,
         nvars=nvars,
     )
+
+
+def select_lag(y: np.ndarray, max_lag: int, nvars: int = 1) -> int:
+    """Lag in 0..max_lag with the smallest BIC, for use with :func:`adf_test`.
+
+    Every candidate is fitted on the SAME rows t = max_lag+1 .. T-1, so the
+    BICs are comparable: BIC(p) = n ln(RSS_p / n) + (2 + p) ln n, with
+    n = T - 1 - max_lag.  A tie goes to the smaller lag.
+
+    Raises:
+        ValueError: same validation as ``adf_test(y, max_lag, nvars)``.
+    """
+    y = np.asarray(y, dtype=float)
+    adf_test(y, maxlag=max_lag, nvars=nvars)  # shared validation
+    m = int(max_lag)
+    dy = np.diff(y)
+    lhs = dy[m:]
+    n = lhs.shape[0]
+    cols = [y[m:-1]]
+    best_lag, best_bic = 0, math.inf
+    for p in range(m + 1):
+        if p > 0:
+            cols.append(dy[m - p : -p])
+        fit = ols(lhs, np.column_stack(cols), intercept=True)
+        rss = float(fit.resid @ fit.resid)
+        fit_term = n * math.log(rss / n) if rss > 0.0 else -math.inf
+        bic = fit_term + (2 + p) * math.log(n)
+        if bic < best_bic or p == 0:
+            best_lag, best_bic = p, bic
+    return best_lag

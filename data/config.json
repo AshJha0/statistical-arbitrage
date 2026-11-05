@@ -10,5 +10,8 @@
   "adf_maxlag": 1,
   "significance": 0.05,
   "kalman_delta": 0.0001,
-  "kalman_r": 0.001
+  "kalman_r": 0.001,
+  "pnl_stop_frac": 0.02,
+  "max_hold_days": 60,
+  "cooldown_days": 20
 }
