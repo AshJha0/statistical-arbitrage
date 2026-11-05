@@ -5,6 +5,11 @@ generated data and are not evidence of edge. The review behind v1.2.0 is
 `review/2026-11-05/REVIEW.md`; the contract is
 `review/2026-11-05/CONTRACT_v1.2.md`, folded into `API_SPEC.md`.
 
+## Unreleased
+
+- Real-data pairs study, preregistered: null result (holdout net Sharpe -0.42). See `research/real_data_2026_11/RESULTS.md`.
+- CI: action versions updated, runner pinned to ubuntu-24.04.
+
 ## 1.2.0
 
 Changes follow the v1.1.0 review. Several change results: backtest numbers
