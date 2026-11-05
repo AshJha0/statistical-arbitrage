@@ -204,7 +204,7 @@ def cusum_break_test(s: np.ndarray, lags: int | None = None) -> CusumResult:
         lrv = float(c @ c) / n  # Bartlett weights keep this rare; be safe
     path = np.abs(np.cumsum(c))
     stat = float(path.max()) / math.sqrt(lrv * n)
-    return CusumResult(stat, _kolmogorov_sf(stat), int(path.argmax()))
+    return CusumResult(stat, _kolmogorov_sf(stat), int(np.argmax(path)))
 
 
 def benjamini_hochberg(
