@@ -8,3 +8,4 @@ __pycache__/
 cpp/cmake_test_discovery_*.json
 .ruff_cache/
 .mypy_cache/
+research/real_data_2026_11/.cache/
