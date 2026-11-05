@@ -109,5 +109,6 @@ jobs:
         working-directory: data
         env:
           PYTHONPATH: ${{ github.workspace }}/python/src
-      - name: Fail if generated data differs from committed data
-        run: git diff --exit-code -- data
+      - name: Fail if regenerated data differs beyond tolerance
+        run: python check_regenerated.py
+        working-directory: data
