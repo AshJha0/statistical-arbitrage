@@ -7,9 +7,9 @@ Johansen-lite, Kalman dynamic hedge, dollar-neutral pairs backtest) is specified
 down to the solver so that all four languages agree to tight tolerances,
 enforced by a shared golden-value suite.
 
-**Status (v1.2.0).** A teaching and research-infrastructure library on
-synthetic data. It is not a trading system and nothing in it is evidence of
-edge; see [Limitations and what this is not](#limitations-and-what-this-is-not)
+**Status (v1.2.0).** A teaching and research-infrastructure library. The
+bundled data is synthetic, and two preregistered studies on real US data found
+no edge. It is not a trading system; see [Limitations and what this is not](#limitations-and-what-this-is-not)
 before reading any number below. Changes since v1.1.0 are in
 [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -46,7 +46,8 @@ Everything is deterministic: no RNG at runtime (randomness lives only in
 
 Read this before the numbers.
 
-- **No real data.** The three CSVs come from `data/generate_data.py`, and the
+- **The bundled data is synthetic.** Real-data studies live in `research/`
+  and their raw prices are not committed. The three CSVs come from `data/generate_data.py`, and the
   pair's generator is the model the tests assume. Over 300 seeds with no
   break, the out-of-sample Sharpe is 1.44; that recovers the generator and is
   not evidence of anything (review C1, `review/2026-11-05/REVIEW.md`).
@@ -92,7 +93,7 @@ Read this before the numbers.
   at 10. A break window averages -12.6% (5th percentile -18.2%), so break-even
   is one break per about 10.5 years per pair; the profile is a small steady
   gain with a rare large loss. These describe the generator, not any market.
-  No real-market profit has been measured.
+  On real data, both preregistered studies were null (see above).
 
 ## Directory layout
 
@@ -108,6 +109,8 @@ statistical-arbitrage/
     GITHUB_PAGES.md       publishing guide for the docs site: https://ashjha0.github.io/statistical-arbitrage/
     index.html            the project site
     diagrams/*.mmd        raw Mermaid sources
+  research/               preregistered real-data studies: protocol, script, aggregate results
+  review/                 dated reviews, contract and experiments
   data/
     pair_equity.csv       1500 days, cointegrated pair (true beta 1.7, break at day 1050)
     fx_triangle.csv       EURUSD vs GBPUSD*EURGBP basket (cointegration in logs)

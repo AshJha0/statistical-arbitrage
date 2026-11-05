@@ -826,6 +826,10 @@ real.
 
 ---
 
+## 16. How do I run a real-data study honestly?
+
+Commit a preregistration first, with the data, rules, dates and pass gates. Run the development period for bugs only, then the holdout once, and report a failure as a null. Worked examples: [`research/real_data_2026_11`](research/real_data_2026_11) and [`research/sector_residual_2026_11`](research/sector_residual_2026_11). Both were null.
+
 ## Verifying the non-Python snippets
 
 Every C++, Rust and Java block in recipes 1–12 is extracted in order, the
