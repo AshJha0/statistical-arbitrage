@@ -7,6 +7,11 @@ Every implementation (Python `statarb`, C++ `statarb::`, Rust crate
 exactly as pinned; agreement is enforced by `data/golden/golden.json`.
 The Python package under `python/src/statarb/` is the reference.
 
+**Scope.** This contract covers sections 1-11 and the golden suite. The
+Python-only `statarb.research` helpers (section 12), the Python-only paper-trading package
+`statarb.trading` (section 13) and the `research/` studies are outside it: they
+are not ported, not in the goldens and not required of any other language.
+
 Notation: series are 1-D arrays of doubles indexed `t = 0..T-1`.
 "Pinned" means: not an implementation choice — do it this way.
 
@@ -708,3 +713,32 @@ Not ported and not in the goldens; numpy and the standard library only.
 `scan_pairs` (EG both ways, BH on the larger p-value, then half-life and
 `beta > 0` filters). The docstrings give the formulas and sources. These are
 judgement aids; none of them feeds the trading path.
+
+## 13. Paper-trading layer (`statarb.trading`): Python only, outside the contract
+
+Added in 1.2.1. Not ported to C++, Rust or Java, not pinned by this document
+and not in `golden.json`; the Python source and its tests are the only
+definition. It adds no function to the ported API and changes no pinned
+behaviour of sections 1-11.
+
+**Paper only.** No network code, no credentials, no live-order path. `Broker`
+is a `typing.Protocol` (`submit`, `cancel`, `order`, `open_orders`,
+`positions`, `cash`, `fills`) that a real adapter could implement; `PaperBroker`
+is the only implementation. A live adapter is an owner decision and is out of
+scope.
+
+Public names: `Order`, `OrderStatus`, `Side`, `Fill`, `Quote`,
+`ClientOrderIdGenerator`, `IllegalTransition`; `Broker`, `PaperBroker`,
+`PaperBrokerConfig`; `PairExecutor`, `ExecutionConfig`, `Outcome`;
+`RiskEngine`, `RiskLimits`, `RiskDecision`, `RiskReason`; `Ledger`,
+`AuditLog`, `Attribution`, `Break`, `BreakKind`; `PaperRunConfig`,
+`PaperRunResult`, `run_paper`.
+
+Assumptions callers must know: ADV is supplied by the caller (the bundled CSVs
+have no volume) and every fill-model cost is an assumption; risk limits are
+checked at decision prices, so a later price move can breach one with no trade,
+after which only orders that do not raise the breached measure pass; a
+*reducing* order (one that cannot cross zero or increase any position, even if
+all open orders fill) is always approved and still logged. The audit log is
+append-only JSONL keyed by bar number, not wall-clock time, so a seeded run
+replays byte for byte.

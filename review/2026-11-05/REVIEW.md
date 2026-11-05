@@ -36,10 +36,10 @@ H8. Nothing is tick-capable: batch only, O(T*W) z-score, no streaming API, no be
 - FX triangle residual (~18 bps sd, phi 0.9) is not a realistic parity deviation.
 - Port audit: C++/Java config parsers accept invalid JSON; CSV number grammar differs per port; `window: 60.5` truncates in C++/Rust demos; jacobi_eigh symmetry and tie order differ; absolute JACOBI_TOL runs all 100 sweeps on X'X; compute_metrics peak=0 gives three answers.
 - Build: gtest mandatory, no default Release, no Rust release profile or clippy, Java has hardcoded Linux jar paths and no Maven/Gradle.
-- Owner rule breach: the word "interview" at LEARN.md:737 and docs/index.html:90 (the live site matches).
+- Owner rule breach: a banned word at LEARN.md:737 and docs/index.html:90 (the live site matches).
 
 ## Fix order
-1. Now, small: correct README/site claims (C3, C4, walk-forward label); remove "interview"; reject or handle beta<=0; beta-hedged sizing; add CI for all four languages, branch protection.
+1. Now, small: correct README/site claims (C3, C4, walk-forward label); remove a banned word; reject or handle beta<=0; beta-hedged sizing; add CI for all four languages, branch protection.
 2. Engine: P&L stop, time stop, cool-down; fixed equilibrium mean option; dynamic hedge in the backtester; streaming step() API; rolling refit; cost, borrow and impact model.
 3. Statistics: lag selection, both normalisations, break tests (CUSUM, Gregory-Hansen), Kalman MLE/EM with diagnostics, bootstrap CIs, deflated Sharpe, FDR on pair selection.
 4. Research: free real data, survivorship-aware universe, sector-constrained selection, preregistered holdout, portfolio of pairs with market/sector neutrality. A null result is acceptable; publish it.

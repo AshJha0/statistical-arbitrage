@@ -1,0 +1,13 @@
+flowchart TD
+    PX["Daily adjusted closes\n63 stocks in 8 sector groups + 8 sector ETFs"] --> RET["Simple returns, last 60 days"]
+    RET --> OLS["OLS: stock on its sector ETF\nbeta and residuals"]
+    OLS --> X["X = cumulative sum of residuals"]
+    X --> AR["AR(1) on X: X_k = a + b X_(k-1) + e"]
+    AR --> EL{"0 < b < 1 and\nhalf-life <= 30 days?"}
+    EL -- "no" --> NONE["ineligible: opens nothing,\nclose if open"]
+    EL -- "yes" --> S["s = (X_t - m) / sigma\nm = a/(1-b), sigma = sd(e)/sqrt(1-b^2)"]
+    S --> RULE{"flat: |s| >= 1.25 opens\nopen: |s| <= 0.5, 20 days,\nor ineligible exits"}
+    RULE --> EXE["Signal at close t,\nexecute at close t+1"]
+    EXE --> POS["One unit of stock hedged with\n-beta units of the sector ETF\nbeta fixed at entry"]
+    POS --> PNL["Daily P&L = dir x (r_stock - beta x r_etf)\ncosts 5 bps stock, 2 bps ETF, borrow 1% a year"]
+    PNL --> GATE["Holdout gates, run once\nresult: null, net Sharpe -0.32"]

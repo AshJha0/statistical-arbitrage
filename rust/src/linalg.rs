@@ -197,13 +197,20 @@ pub fn jacobi_eigh(a: &[Vec<f64>]) -> Result<(Vec<f64>, Matrix)> {
             }
         }
     }
-    let mut mat: Matrix = a.to_vec();
-    let mut v = identity(n);
+    // Flat row-major working copies, allocated once; each rotation is applied
+    // in place. Only the entries the dense products `J' M J` and `V J` would
+    // change are touched, with the same operands in the same order (the
+    // skipped terms are exact zeros), so results are bit-identical.
+    let mut m: Vec<f64> = a.iter().flat_map(|r| r.iter().copied()).collect();
+    let mut vf: Vec<f64> = vec![0.0; n * n];
+    for i in 0..n {
+        vf[i * n + i] = 1.0;
+    }
     for _ in 0..JACOBI_MAX_SWEEPS {
         let mut off2 = 0.0;
         for i in 1..n {
             for j in 0..i {
-                off2 += mat[i][j] * mat[i][j];
+                off2 += m[i * n + j] * m[i * n + j];
             }
         }
         if (off2 * 2.0).sqrt() < JACOBI_TOL {
@@ -211,11 +218,11 @@ pub fn jacobi_eigh(a: &[Vec<f64>]) -> Result<(Vec<f64>, Matrix)> {
         }
         for p in 0..n.saturating_sub(1) {
             for q in p + 1..n {
-                let apq = mat[p][q];
+                let apq = m[p * n + q];
                 if apq.abs() <= JACOBI_TOL {
                     continue;
                 }
-                let theta = (mat[q][q] - mat[p][p]) / (2.0 * apq);
+                let theta = (m[q * n + q] - m[p * n + p]) / (2.0 * apq);
                 let t = if theta == 0.0 {
                     1.0
                 } else {
@@ -223,25 +230,34 @@ pub fn jacobi_eigh(a: &[Vec<f64>]) -> Result<(Vec<f64>, Matrix)> {
                 };
                 let c = 1.0 / (t * t + 1.0).sqrt();
                 let s = t * c;
-                let mut jrot = identity(n);
-                jrot[p][p] = c;
-                jrot[q][q] = c;
-                jrot[p][q] = s;
-                jrot[q][p] = -s;
-                // full products mirror the reference implementation exactly
-                mat = mat_mul(&mat_mul(&transpose(&jrot), &mat), &jrot);
-                v = mat_mul(&v, &jrot);
+                // rows p, q of J' M
+                for j in 0..n {
+                    let (mp, mq) = (m[p * n + j], m[q * n + j]);
+                    m[p * n + j] = 0.0 + c * mp + (-s) * mq;
+                    m[q * n + j] = 0.0 + s * mp + c * mq;
+                }
+                // columns p, q of (J' M) J and of V J
+                for i in 0..n {
+                    let (ap, aq) = (m[i * n + p], m[i * n + q]);
+                    m[i * n + p] = 0.0 + c * ap + (-s) * aq;
+                    m[i * n + q] = 0.0 + s * ap + c * aq;
+                    let (vp, vq) = (vf[i * n + p], vf[i * n + q]);
+                    vf[i * n + p] = 0.0 + c * vp + (-s) * vq;
+                    vf[i * n + q] = 0.0 + s * vp + c * vq;
+                }
             }
         }
     }
+    let mat = |i: usize, j: usize| m[i * n + j];
+    let v = |i: usize, j: usize| vf[i * n + j];
     // sort descending (stable ascending argsort, reversed — as the reference);
     // total_cmp cannot panic (the input is finite, so no NaN can appear)
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&i, &j| mat[i][i].total_cmp(&mat[j][j]));
+    order.sort_by(|&i, &j| mat(i, i).total_cmp(&mat(j, j)));
     order.reverse();
-    let vals: Vec<f64> = order.iter().map(|&i| mat[i][i]).collect();
+    let vals: Vec<f64> = order.iter().map(|&i| mat(i, i)).collect();
     let vecs: Matrix = (0..n)
-        .map(|r| order.iter().map(|&c| v[r][c]).collect())
+        .map(|r| order.iter().map(|&c| v(r, c)).collect())
         .collect();
     Ok((vals, vecs))
 }

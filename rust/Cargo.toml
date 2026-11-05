@@ -1,6 +1,6 @@
 [package]
 name = "statarb"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 rust-version = "1.85"
 description = "Statistical arbitrage toolkit: cointegration, Kalman dynamic hedge, pairs backtest"
@@ -19,3 +19,7 @@ path = "src/bin/demo.rs"
 [profile.release]
 lto = true
 codegen-units = 1
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"

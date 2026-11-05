@@ -1,0 +1,28 @@
+sequenceDiagram
+    participant S as Signal
+    participant E as PairExecutor
+    participant R as RiskEngine
+    participant B as PaperBroker
+    S->>E: enter(target y -3097, x +5077)
+    Note over E: slowest leg progress m = 0, bound b = 0.5\nsend up to ceil((m + b) x target) per leg
+    E->>R: check y sell 1549, then x buy 2539
+    R-->>E: approved both
+    E->>B: submit both children
+    B-->>E: bar t+1 y fills 1549, x not yet eligible (latency)
+    B-->>E: bar t+2 x partial fill 1925 of 2539
+    Note over E: progress y 0.50, x 0.38\nslowest m = 0.38, so allowed = ceil(0.88 x target)
+    E->>R: check y sell 1174, x buy 1925
+    R-->>E: approved
+    E->>B: submit second children
+    B-->>E: more partial fills each bar
+    alt both legs reach 100 percent
+        E-->>S: outcome FILLED
+    else timeout_bars passed or a child rejected
+        E->>B: cancel open children
+        Note over E: UNWIND back to the start, paced the same way\nimbalance vs original target stays under 2b plus rounding
+        E->>R: check reducing orders, always approved
+        E->>B: submit unwind children
+        B-->>E: filled, retried each bar until done
+        E-->>S: outcome UNWOUND
+    end
+    Note over E,B: exit and unwind never give up:\na rejected child is retried on the next bar

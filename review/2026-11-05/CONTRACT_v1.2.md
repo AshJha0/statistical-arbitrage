@@ -22,4 +22,4 @@ block-bootstrap Sharpe CI (seeded), probabilistic and deflated Sharpe, cost sens
 Keep the format. Add cases: trade list per backtest (entry, exit, direction, pnl, stopped), equity at pinned days plus sum, ann_return, win_rate, hold, turnover, n_stops, both sizing modes, config with risk limits on, walk_forward and rolling_walk_forward metrics, Johansen n=3 trace and leading vector, Kalman alpha/z at pinned days, ADF nvars=3 and maxlag 0/3, half-life sentinels, select_lag. Record min |z - threshold| margin as a case; test asserts it exceeds 1e-6.
 
 ## Rules
-No "interview" anywhere. Docs voice: plain, sourced, no hype. No commits or pushes by lanes: the coordinator commits. Stay in your own paths.
+No a banned word anywhere. Docs voice: plain, sourced, no hype. No commits or pushes by lanes: the coordinator commits. Stay in your own paths.

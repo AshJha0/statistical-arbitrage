@@ -7,9 +7,11 @@ Johansen-lite, Kalman dynamic hedge, dollar-neutral pairs backtest) is specified
 down to the solver so that all four languages agree to tight tolerances,
 enforced by a shared golden-value suite.
 
-**Status (v1.2.0).** A teaching and research-infrastructure library. The
+**Status (v1.2.1).** A teaching and research-infrastructure library. The
 bundled data is synthetic, and two preregistered studies on real US data found
-no edge. It is not a trading system; see [Limitations and what this is not](#limitations-and-what-this-is-not)
+no edge. v1.2.1 adds a Python-only **paper-trading** layer (simulated broker,
+pre-trade risk, ledger, audit trail; no live broker) and latency benchmarks
+for Rust and Java. It is not a trading system; see [Limitations and what this is not](#limitations-and-what-this-is-not)
 before reading any number below. Changes since v1.1.0 are in
 [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -34,6 +36,8 @@ namespace `statarb`, Rust crate `statarb`, Java package `com.quant.statarb`.
 | Single holdout | `walk_forward`: ONE fit on the first 60%, ONE trade of the last 40%. The name is kept for compatibility; it is a holdout, not a rolling procedure |
 | Rolling walk-forward | `rolling_walk_forward(y, x, config, train, test)`: refit every `test` days on the last `train` days, trade the next block with history-only warm-up, flat at each block end, stitched equity. A block whose fit has `beta <= 0` stays flat and is flagged `skipped` |
 | Research helpers (Python only) | `statarb.research`: block-bootstrap Sharpe interval, probabilistic and deflated Sharpe, cost sensitivity, CUSUM break test, Benjamini–Hochberg, Kalman grid-MLE with innovation diagnostics, `scan_pairs`. Not ported, not in the goldens, not on the trading path |
+| Paper trading (Python only) | `statarb.trading`: `PaperBroker` (half-spread, square-root impact, participation cap, latency, borrow, commission), `PairExecutor` (two-leg pacing and unwind), `RiskEngine` (pre-trade limits, reducing orders always pass, latching drawdown kill switch), `Ledger` (independent books, reconciliation, cost attribution), append-only JSONL `AuditLog`, and `run_paper`. **Paper only:** no network code, no credentials, no live-order path. A live adapter is an owner decision. Outside the ported contract, not in the goldens |
+| Benchmarks (Rust, Java) | `rust/src/bin/bench.rs` and `java/.../Bench.java`: per-update latency of `RollingZ` and `KalmanStep` over batches of 64, plus throughput. See [Benchmarks](#benchmarks) |
 | Teaching cases | Regime break at day 1050 (Kalman tracks beta; static OLS cannot; neither is shown to make money across the break), spurious regression on independent random walks (no trade) |
 | Input validation | Every public entry point rejects NaN/inf, length mismatches, empty/constant/collinear inputs and out-of-domain parameters with the language's error type (`ValueError` / `std::invalid_argument` / `Err(StatarbError)` / `IllegalArgumentException`); the loaders refuse non-finite cells, a non-monotone `day` column, trailing JSON content, hex, `_` and type suffixes, and non-integer `window`/day fields |
 
@@ -51,13 +55,26 @@ Read this before the numbers.
   pair's generator is the model the tests assume. Over 300 seeds with no
   break, the out-of-sample Sharpe is 1.44; that recovers the generator and is
   not evidence of anything (review C1, `review/2026-11-05/REVIEW.md`).
-- **Not tradable as it stands.** Fractional quantities, both legs filled at
-  one close, a flat 1.5 bps per side, no borrow, financing, impact, capacity
-  or locate check, no restricted lists or corporate actions, no portfolio or
-  sector limits, no broker adapter or reconciliation. One pair at a time.
-- **Not low latency.** The batch functions are O(T x W) for the z-score and
+- **Not tradable as it stands.** The four-language library backtests with
+  fractional quantities, both legs filled at one close, a flat 1.5 bps per
+  side, no borrow, impact, capacity or locate check, no corporate actions. The
+  Python `statarb.trading` layer adds whole shares, staged fills, impact,
+  borrow, locates, a restricted list and pre-trade limits, but it is paper only:
+  no live broker exists, ADV and every cost are assumed (the CSV has no volume),
+  limits are checked at decision prices so a later price move can breach them,
+  and it trades one pair. A live adapter is an owner decision.
+- **Paper P&L is very sensitive to entry timing, and no paper result here is
+  an edge.** On the bundled pair, out of sample (600 days, synthetic): the
+  backtest is -49,084; the frictionless paper run is -45,526; with assumed
+  costs, staged fills and limits, seed 42 gives +3,953 (spread P&L at mid
+  +12,841, costs and borrow -8,889, 82% of the frictionless notional, no
+  rejections); twenty fill seeds give -477 to +3,801. Delaying both legs by two
+  bars, with no costs at all, moves -45,526 to -16,782, and four bars gives
+  +19,743. One synthetic path and about 9 trades, seen after the fact.
+- **Not tick-to-trade.** The batch functions are O(T x W) for the z-score and
   allocate freely. The streaming API (`RollingZ`, `KalmanStep`) is O(1) per
-  update, but there are no benchmarks and no book, feed or order layer.
+  update; measured batch-average latencies are in [Benchmarks](#benchmarks).
+  They exclude any feed, book or order path.
 - **Not a research pipeline.** `statarb.research` gives a bootstrap interval,
   deflated Sharpe, a break test and a multiple-testing-aware scan, in Python
   only. There is still no universe, no survivorship handling and no
@@ -108,7 +125,8 @@ statistical-arbitrage/
     ARCHITECTURE.md       component design, data flow, numerical decisions
     GITHUB_PAGES.md       publishing guide for the docs site: https://ashjha0.github.io/statistical-arbitrage/
     index.html            the project site
-    diagrams/*.mmd        raw Mermaid sources
+    diagrams/*.mmd        raw Mermaid sources (data flow, backtest day, types, order lifecycle,
+                          paper flow, pair-entry leg risk, research protocol, sector-residual pipeline)
   research/               preregistered real-data studies: protocol, script, aggregate results
   review/                 dated reviews, contract and experiments
   data/
@@ -120,10 +138,11 @@ statistical-arbitrage/
     golden/golden.json    928 golden cases every language must reproduce
   .github/workflows/      CI for all four languages plus a data-regeneration check
   python/                 reference implementation (numpy only in the package;
-                          research.py holds the Python-only research helpers)
+                          research.py holds the Python-only research helpers,
+                          trading/ the paper-trading layer, demo_paper.py its demo)
   cpp/                    C++17 library + GoogleTest suite + demo
-  rust/                   Rust library + integration tests + demo binary
-  java/                   Java 21 sources + JUnit 4 tests + demo (Maven pom.xml or plain javac)
+  rust/                   Rust library + integration tests + demo and bench binaries
+  java/                   Java 21 sources + JUnit 4 tests + demo and Bench (Maven pom.xml or plain javac)
 ```
 
 ## Build, run, test
@@ -144,7 +163,8 @@ does not replace it.
 cd python
 pip install -r requirements.txt         # numpy; pytest + statsmodels for tests
 PYTHONPATH=src python3 demo.py          # run the demo
-PYTHONPATH=src python3 -m pytest -q     # run the tests (1113 pass; the golden cases are most of them)
+PYTHONPATH=src python3 demo_paper.py    # paper-trading demo (simulated fills; see below)
+PYTHONPATH=src python3 -m pytest -q     # run the tests (1248 pass; the golden cases are most of them)
 ruff check . && mypy src/statarb        # lint and types, as CI does
 ```
 
@@ -159,11 +179,12 @@ ctest --test-dir build --output-on-failure   # run the tests (107 pass)
 # the build uses -ffp-contract=off so a*b+c is never fused, which cross-language agreement needs
 ```
 
-### Rust (1.95, edition 2021; only dependency `serde_json` for the config loader)
+### Rust (built on 1.99, declared minimum 1.85, edition 2021; only dependency `serde_json` for the config loader)
 
 ```bash
 cd rust
 cargo run --bin demo --release          # run the demo
+cargo run --bin bench --release         # latency and throughput harness (see Benchmarks)
 cargo test --release                    # run the tests (115 pass; `cargo build --release` is warning-free)
 cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings   # as CI does
 ```
@@ -174,6 +195,7 @@ cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings   # as C
 cd java
 bash build.sh                           # javac -Xlint:all -Werror --release 21 into out/ (tests only if the jars are found)
 bash demo.sh                            # run the demo main
+bash bench.sh                           # latency and throughput harness (after build.sh; see Benchmarks)
 bash test.sh                            # `mvn -B -q test` if Maven is installed, else JUnitCore (109 pass)
 # without Maven, set JUNIT_JAR and HAMCREST_JAR (or JUNIT_HOME) if they are not in /usr/share/java or ~/.m2
 ```
@@ -241,6 +263,67 @@ hedge. Out of sample, the P&L stop, max-hold and cool-down cut the loss from
 -12.35% to -4.91% and the drawdown from 15.28% to 6.86%; it is still a loss.
 The rolling result looks near break-even partly because the last three blocks sat flat.
 
+## Paper-trading demo (Python only)
+
+Real output of `PYTHONPATH=src python demo_paper.py` in `python/` (first
+section). **Paper trading only**: simulated fills on synthetic prices; ADV and
+costs are assumed, not calibrated to any market.
+
+```
+hedge fit on days 0-899: alpha 17.360, beta 1.639; traded on 600 later days
+
+Backtest out of sample (fractional shares, flat bps cost, instant fills): net P&L -49,084, Sharpe -0.78, 9 trades
+
+Paper run (seed 42)
+  net P&L                   3,953   (+0.40% of capital)
+  spread P&L at mid        12,841
+  half-spread              -1,471
+  impact                   -5,171
+  commission                 -742
+  borrow                   -1,505
+  entries 8, outcomes {'FILLED': 7, 'FLAT': 8, 'UNWOUND': 0}, fills 119
+  risk rejections none
+  kill switch not tripped; reconciliation breaks 0
+
+Across 20 fill seeds, net P&L -477 to 3,801.
+
+Pure delay, no costs, both legs late, nothing else changed:
+  +0 bars: net P&L   -45,526
+  +2 bars: net P&L   -16,782
+  +4 bars: net P&L    19,743
+```
+
+Read it as a warning, not a result. The frictionless run loses 45,526 and the
+costed run makes money because staged, delayed fills happen to enter later on
+this one path; the pure-delay table shows the same effect with no costs. The
+seed range is fill noise only, not a confidence interval. Delay has not been
+tested as a rule on unseen data. [LEARN.md section 10a](LEARN.md#10a-execution-basics)
+explains the pieces; [COOKBOOK.md](COOKBOOK.md) recipes 17-20 run them.
+
+## Benchmarks
+
+Per-update latency of the streaming `RollingZ` and `KalmanStep`, in
+nanoseconds, from `rust/src/bin/bench.rs` and `java/.../Bench.java`. Each figure
+is a **64-update batch average** (batch time / 64), median of 3 runs, on one
+noisy Windows machine. It is not tick-to-trade, not JMH, and `max` is operating
+system jitter, not code.
+
+| | p50 | p99 | p99.9 | max |
+|---|---:|---:|---:|---:|
+| Rust `RollingZ` | 6.2 | 25.0 | 45.3 | 2684 |
+| Rust `KalmanStep` | 17.2 | 29.7 | 232.8 | 2137 |
+| Java `RollingZ` | 14.1 | 29.7 | 182.8 | 2477 |
+| Java `KalmanStep` | 31.3 | 50.0 | 268.8 | 3155 |
+
+Throughput on the bundled pair: Rust rolling z-score 21.9M bars/s, backtest
+13.6M; Java 10.47M and 7.37M observations/s. Percentiles of batch averages hide
+sub-batch outliers; see [LEARN.md section 10c](LEARN.md#10c-reading-latency-numbers).
+Perf work this release: Jacobi rotations in Rust and Java now update only the
+affected rows and columns, bit-identical. Not done: Java flat matrices and
+removing the boxed `Map` from results (public API); Rust OLS is unchanged
+(at most 4x4). Run with `cargo run --bin bench --release` (in `rust/`) and
+`bash bench.sh` (in `java/`, after `bash build.sh`).
+
 ## Golden-value cross-language testing
 
 `data/golden/golden.json` holds 928 named cases (the count follows the trade lists) — OLS coefficients and R² on the
@@ -269,7 +352,7 @@ coefficients/SEs, ADF t-stats and `mackinnoncrit` critical values,
 `coint_johansen` eigenvalues and trace statistics) and an independent numpy
 generalised-eigenproblem solve, and refuses to write on any disagreement.
 
-Test counts (all passing): Python 1113 (run on Windows for this release; CI
+Test counts (all passing): Python 1248 (run on Windows for this release; CI
 runs 3.11 and 3.12 on Linux), C++ 107, Rust 115, Java
 109. Beyond the golden layer every port
 carries the same behavioural suite: accounting identity, gross notional equal
@@ -325,7 +408,7 @@ What a practitioner gets, precisely:
   fails with the language's error type; no NaN is ever silently propagated
   into a metric. Config structs are re-validated at run time in C++/Rust.
 - **Deliberately out of scope.** Calendars/day-count, `periods_per_year`,
-  intraday data, financing and borrow costs, market impact, position
+  intraday data, financing and borrow costs, market impact (the Python paper layer models borrow and impact; the four-language library does not), position
   compounding, rolling ADF/half-life diagnostics helpers, Johansen
   deterministic-term variants and p-values, structured
   error codes beyond Rust's enum. These are documented limits, not hidden ones.
