@@ -42,7 +42,7 @@ Everything is deterministic: no RNG at runtime (randomness lives only in
 
 ## Limitations and what this is not
 
-**Real-data result (2026-11-05): null.** A preregistered study on US equities, 2020-2026 holdout, gave net Sharpe -0.42 and about zero gross return. See [research/real_data_2026_11/RESULTS.md](research/real_data_2026_11/RESULTS.md).
+**Real-data result (2026-11-05): null.** A preregistered study on US equities, 2020-2026 holdout, gave net Sharpe -0.42 and about zero gross return. See [research/real_data_2026_11/RESULTS.md](research/real_data_2026_11/RESULTS.md). A second preregistered study, [sector-residual reversal](research/sector_residual_2026_11/RESULTS.md), was also null: holdout net Sharpe -0.32.
 
 Read this before the numbers.
 
