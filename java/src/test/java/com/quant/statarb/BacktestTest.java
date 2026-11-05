@@ -48,10 +48,9 @@ public class BacktestTest {
     }
 
     @Test
-    public void dollarNeutralityAtEntry() {
-        // at each entry execution the two legs carry capital/2 notional each:
-        // the entry-day traded notional equals gross capital and costs equal
-        // capital * bps
+    public void grossNotionalEqualsCapitalAtEntry() {
+        // at each entry execution gross notional equals capital (both sizing
+        // modes), so the entry-day cost equals capital * bps
         Backtest.Result res = bundledRun();
         double cap = TestData.config().get("capital");
         double bps = (TestData.config().get("cost_bps")
@@ -94,11 +93,11 @@ public class BacktestTest {
 
     @Test
     public void noTradesMetricsGuarded() {
-        // unreachable entry threshold: flat equity, all metrics zero/finite
+        // reachable but never hit entry threshold: flat equity, all metrics zero/finite
         double cap = TestData.config().get("capital");
         double[] y = TestData.slice(TestData.pair().get("stock_y"), 0, 400);
         double[] x = TestData.slice(TestData.pair().get("stock_x"), 0, 400);
-        Backtest.Config cfg = new Backtest.Config(60, 50.0, 0.5, 60.0, 1.0, 0.5, cap);
+        Backtest.Config cfg = new Backtest.Config(60, 7.5, 0.5, 7.6, 1.0, 0.5, cap);
         Backtest.Result res = Backtest.run(y, x, 12.0, 1.7, cfg);
         assertEquals(0, res.trades().size());
         for (double e : res.equity()) {
@@ -246,10 +245,10 @@ public class BacktestTest {
         for (int t = 0; t < n; t++) {
             y[t] = 10.0 + x[t] + s[t];
         }
-        Backtest.Config cfg = new Backtest.Config(20, 2.0, 0.5, 8.0, 1.0, 0.5, 1e6);
+        Backtest.Config cfg = new Backtest.Config(20, 2.0, 0.5, 4.24, 1.0, 0.5, 1e6);
         double[] z = zpath(s, 20);
         assertTrue(maxAbsFinite(z, 0, n - 2) < 2.0);
-        assertTrue(z[n - 2] >= 2.0 && z[n - 2] < 8.0);
+        assertTrue(z[n - 2] >= 2.0 && z[n - 2] < 4.24);
         Backtest.Result res = Backtest.run(y, x, 10.0, 1.0, cfg);
         assertTrue(res.trades().isEmpty());
         assertEquals(0.0, res.metrics().get("n_trades"), 0.0);
@@ -330,7 +329,8 @@ public class BacktestTest {
         for (int t = 0; t < n; t++) {
             y[t] = 10.0 + x[t] + s[t];
         }
-        Backtest.Config cfg = new Backtest.Config(w, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6);
+        Backtest.Config cfg = new Backtest.Config(w, 2.0, 0.5, 4.0, 1.0, 0.5, 1e6)
+                .withSizing(Backtest.EQUAL_DOLLAR);
         double[] z = zpath(s, w);
         assertTrue(maxAbsFinite(z, 0, t0) < cfg.entryZ());
         assertTrue(z[t0] >= cfg.entryZ() && z[t0] < cfg.stopZ());
@@ -412,7 +412,8 @@ public class BacktestTest {
             x[t] = t < t0 + 2 ? 50.0 : 200.0;                // short leg quadruples
             y[t] = 100.0 + s[t];                              // alpha 50, beta 1
         }
-        Backtest.Config cfg = new Backtest.Config(w, 2.0, 0.5, 4.0, 0.0, 0.0, 1e6);
+        Backtest.Config cfg = new Backtest.Config(w, 2.0, 0.5, 4.0, 0.0, 0.0, 1e6)
+                .withSizing(Backtest.EQUAL_DOLLAR);
         Backtest.Result res = Backtest.run(y, x, 50.0, 1.0, cfg);
         assertEquals(1, res.trades().size());
         Backtest.Trade tr = res.trades().get(0);
@@ -472,7 +473,7 @@ public class BacktestTest {
     public void walkForwardSplitExact() {
         // proposed test 8 (MIN-10): floor(T * frac) is the intended integer
         // (700 * 0.7 == 489.99999999999994 in binary floating point)
-        Backtest.Config cfg = new Backtest.Config(5, 50.0, 0.5, 60.0, 1.0, 0.5, 1e6);
+        Backtest.Config cfg = new Backtest.Config(5, 1.5, 0.5, 1.7, 1.0, 0.5, 1e6);
         int[] lengths = {700, 100, 1500};
         double[] fracs = {0.7, 0.29, 0.6};
         int[] expected = {490, 29, 900};
@@ -480,8 +481,8 @@ public class BacktestTest {
             double[] y = new double[lengths[c]];
             double[] x = new double[lengths[c]];
             for (int t = 0; t < lengths[c]; t++) {
-                y[t] = 100.0 + Math.sin(0.3 * t);
                 x[t] = 50.0 + Math.cos(0.2 * t);
+                y[t] = 100.0 + 2.0 * x[t] + 0.1 * Math.sin(0.3 * t);
             }
             assertEquals(expected[c], Backtest.walkForward(y, x, cfg, fracs[c]).split());
         }

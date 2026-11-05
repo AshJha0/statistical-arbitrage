@@ -3,8 +3,9 @@
 ///
 /// Validation (pinned across languages): the file must exist and hold a
 /// header plus at least one data row; every row must have exactly as many
-/// cells as the header; every cell must parse as a FINITE number
-/// (nan/inf are rejected, not propagated); column names must be unique;
+/// cells as the header; every cell must match the plain decimal/exponent
+/// grammar (no hex, `_`, suffixes, nan/inf; `day` cells plain integers) and
+/// parse to a FINITE double (locale-independent); column names must be unique;
 /// and if a column named `day` exists it must be strictly increasing —
 /// an unsorted, duplicated or re-merged time index silently changes every
 /// lag, z-score and fill in the backtest.  The models further assume the
@@ -30,7 +31,8 @@ std::map<std::string, std::vector<double>> load_csv(const std::string& path);
 
 /// Load the bundled config.json — a FLAT JSON object of finite numeric
 /// scalars (that is all the bundled configuration uses; nested values,
-/// strings, booleans and NaN/Infinity are rejected).
+/// strings, booleans, NaN/Infinity, hex and trailing content are rejected;
+/// window, adf_maxlag, max_hold_days and cooldown_days must be integers).
 /// \throws std::invalid_argument on a missing file or malformed content.
 std::map<std::string, double> load_config(const std::string& path);
 

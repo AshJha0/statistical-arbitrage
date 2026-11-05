@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use statarb::{
-    adf_test, engle_granger, half_life, johansen_trace, kalman_hedge, load_config, load_csv,
-    ols, walk_forward, BacktestConfig, BacktestResult, Result,
+    adf_test, engle_granger, half_life, johansen_trace, kalman_hedge, load_config, load_csv, ols,
+    walk_forward, BacktestConfig, BacktestResult, Result,
 };
 
 fn rule(title: &str) {
@@ -52,15 +52,7 @@ fn run() -> Result<()> {
     let x = &pair["stock_x"];
     let n_is = (y.len() as f64 * cfg["insample_frac"] + statarb::SPLIT_EPS).floor() as usize;
     let maxlag = cfg["adf_maxlag"] as usize;
-    let bt_cfg = BacktestConfig::new(
-        cfg["window"] as usize,
-        cfg["entry_z"],
-        cfg["exit_z"],
-        cfg["stop_z"],
-        cfg["cost_bps"],
-        cfg["slippage_bps"],
-        cfg["capital"],
-    )?;
+    let bt_cfg = BacktestConfig::from_map(&cfg)?;
 
     println!("statarb demo — cointegration, Kalman hedging, pairs backtest");
     println!(
@@ -69,7 +61,10 @@ fn run() -> Result<()> {
         n_is
     );
 
-    rule(&format!("1. Cointegration diagnostics (in-sample, days 0..{})", n_is - 1));
+    rule(&format!(
+        "1. Cointegration diagnostics (in-sample, days 0..{})",
+        n_is - 1
+    ));
     let eg = engle_granger(&y[..n_is], &x[..n_is], maxlag)?;
     println!(
         "  EG step 1  y = {:.4} + {:.4} x   (R^2 {:.4})",
@@ -79,12 +74,19 @@ fn run() -> Result<()> {
         "  EG step 2  ADF(resid) t = {:.4}  crit 5% (2-var) = {:.2}  p ~ {:.4}",
         eg.adf.tstat, eg.adf.crit[1], eg.adf.pvalue
     );
-    println!("  verdict    cointegrated at 5%: {}", eg.cointegrated(0.05)?);
+    println!(
+        "  verdict    cointegrated at 5%: {}",
+        eg.cointegrated(0.05)?
+    );
     println!("  half-life  {:.2} days", half_life(&eg.resid)?);
     let levels: Vec<Vec<f64>> = (0..n_is).map(|t| vec![y[t], x[t]]).collect();
     let jo = johansen_trace(&levels, 1)?;
     for r in 0..2 {
-        let flag = if jo.trace_stats[r] > jo.crit_95[r] { ">" } else { "<" };
+        let flag = if jo.trace_stats[r] > jo.crit_95[r] {
+            ">"
+        } else {
+            "<"
+        };
         println!(
             "  Johansen   trace(r={r}) = {:8.3} {flag} cv95 {:6.2}",
             jo.trace_stats[r], jo.crit_95[r]
@@ -168,7 +170,10 @@ fn run() -> Result<()> {
     let slope_t = ols(wa, wb, true)?.tstats[1];
     println!("  regressing walk_a on walk_b: slope t-stat = {slope_t:.1} —");
     println!("  'significant' by the usual +/-2 rule, yet the walks are independent.");
-    println!("  ADF(walk_a) t = {:.3} (unit root not rejected) and", a1.tstat);
+    println!(
+        "  ADF(walk_a) t = {:.3} (unit root not rejected) and",
+        a1.tstat
+    );
     println!(
         "  ADF(resid) t = {:.3} vs 5% crit {:.2} -> cointegrated: {}",
         sp.adf.tstat,

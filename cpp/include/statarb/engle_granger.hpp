@@ -38,4 +38,19 @@ struct EGResult {
 EGResult engle_granger(const std::vector<double>& y,
                        const std::vector<double>& x, int maxlag = 1);
 
+/// Engle-Granger run in both directions (the test is not symmetric).
+struct EGBothResult {
+    EGResult y_on_x;
+    EGResult x_on_y;
+    /// True only when BOTH directions reject at `alpha_level`.
+    bool cointegrated(double alpha_level = 0.05) const {
+        return y_on_x.cointegrated(alpha_level) && x_on_y.cointegrated(alpha_level);
+    }
+};
+
+/// Run engle_granger as y on x and as x on y.
+EGBothResult engle_granger_both(const std::vector<double>& y,
+                                const std::vector<double>& x, int maxlag = 1);
+
 }  // namespace statarb
+

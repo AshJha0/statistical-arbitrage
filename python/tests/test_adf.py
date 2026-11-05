@@ -51,7 +51,7 @@ def test_pvalue_interpolation_pinned_points() -> None:
         assert interpolate_pvalue(cv10, nvars) == pytest.approx(0.10, abs=1e-12)
     # monotone non-decreasing in the t-stat, and clamped
     grid = [interpolate_pvalue(t, 1) for t in np.linspace(-8.0, 4.0, 60)]
-    assert all(a <= b + 1e-15 for a, b in zip(grid, grid[1:]))
+    assert all(a <= b + 1e-15 for a, b in zip(grid, grid[1:], strict=False))
     assert interpolate_pvalue(-50.0, 1) == pytest.approx(1e-4)
     assert interpolate_pvalue(50.0, 1) == pytest.approx(0.9999)
 

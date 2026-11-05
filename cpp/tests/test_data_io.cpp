@@ -52,8 +52,9 @@ TEST(DataIo, CsvDayColumnMustBeMonotone) {
 }
 
 TEST(DataIo, CsvRejectsNonFiniteRaggedNonNumeric) {
-    expect_error_containing("day,a\n0,1\n1,nan\n", "non-finite");
-    expect_error_containing("day,a\n0,1\n1,inf\n", "non-finite");
+    expect_error_containing("day,a\n0,1\n1,nan\n", "non-numeric");
+    expect_error_containing("day,a\n0,1\n1,inf\n", "non-numeric");
+    expect_error_containing("day,a\n0,1\n1,1e999\n", "non-finite");
     expect_error_containing("day,a\n0,1\n1\n", "ragged");
     expect_error_containing("day,a\n0,1\n\n1,2\n", "ragged");  // interior blank line
     expect_error_containing("day,a\n0,1\n1,abc\n", "non-numeric");

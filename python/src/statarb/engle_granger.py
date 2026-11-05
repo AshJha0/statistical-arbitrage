@@ -61,3 +61,21 @@ def engle_granger(y: np.ndarray, x: np.ndarray, maxlag: int = 1) -> EGResult:
         r2=fit.r2,
         adf=adf,
     )
+
+
+@dataclass(frozen=True)
+class EGBothResult:
+    """Engle-Granger run in both directions (the test is not symmetric)."""
+
+    y_on_x: EGResult
+    x_on_y: EGResult
+
+    def cointegrated(self, alpha: float = 0.05) -> bool:
+        """True only when BOTH directions reject at ``alpha``."""
+        return self.y_on_x.cointegrated(alpha) and self.x_on_y.cointegrated(alpha)
+
+
+def engle_granger_both(y: np.ndarray, x: np.ndarray, maxlag: int = 1) -> EGBothResult:
+    """Run :func:`engle_granger` as y on x and as x on y."""
+    return EGBothResult(y_on_x=engle_granger(y, x, maxlag),
+                        x_on_y=engle_granger(x, y, maxlag))

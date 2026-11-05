@@ -47,4 +47,34 @@ public final class EngleGranger {
         Adf.Result adf = Adf.test(fit.resid(), maxlag, 2);
         return new Result(fit.params()[0], fit.params()[1], fit.resid(), fit.r2(), adf);
     }
+
+    /**
+     * Engle-Granger run in both directions (the test is not symmetric).
+     *
+     * @param yOnX result of y regressed on x
+     * @param xOnY result of x regressed on y
+     */
+    public record BothResult(Result yOnX, Result xOnY) {
+
+        /**
+         * True only when BOTH directions reject.
+         *
+         * @param alpha significance level, one of 0.01, 0.05, 0.10
+         */
+        public boolean cointegrated(double alpha) {
+            return yOnX.cointegrated(alpha) && xOnY.cointegrated(alpha);
+        }
+    }
+
+    /**
+     * Run {@link #test} as y on x and as x on y.
+     *
+     * @param y      dependent series
+     * @param x      regressor series
+     * @param maxlag fixed ADF augmentation lag
+     * @return both directions
+     */
+    public static BothResult testBoth(double[] y, double[] x, int maxlag) {
+        return new BothResult(test(y, x, maxlag), test(x, y, maxlag));
+    }
 }

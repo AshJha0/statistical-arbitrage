@@ -60,4 +60,33 @@ KalmanResult kalman_hedge(const std::vector<double>& y,
                           const std::vector<double>& x,
                           double delta = 1.0e-4, double r = 1.0e-3);
 
+/// Filtered output of one KalmanStep::update.
+struct KalmanOut {
+    double alpha;
+    double beta;
+    double z;
+};
+
+/// Streaming form of kalman_hedge: scalar state, O(1) per update, no
+/// allocation in update().  kalman_hedge loops over this class, so the two
+/// agree exactly; the scalar order of update() is pinned (API_SPEC section 6).
+class KalmanStep {
+public:
+    /// \throws std::invalid_argument as kalman_hedge for delta and r.
+    explicit KalmanStep(double delta = 1.0e-4, double r = 1.0e-3);
+    /// Filter one observation (note the order: x first).
+    /// \throws std::invalid_argument on non-finite x or y (state unchanged).
+    KalmanOut update(double x, double y);
+    double innovation() const { return innovation_; }  ///< e_t of the latest update.
+    double s_var() const { return s_var_; }            ///< S_t of the latest update.
+    Matrix covariance() const;                         ///< Current 2x2 posterior covariance.
+
+private:
+    double q_, r_;
+    double a_ = 0.0, b_ = 0.0;
+    double p00_ = kP0Scale, p01_ = 0.0, p11_ = kP0Scale;
+    double innovation_ = 0.0, s_var_ = 0.0;
+};
+
 }  // namespace statarb
+

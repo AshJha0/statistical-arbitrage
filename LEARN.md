@@ -8,9 +8,10 @@ quantified through the half-life, why a Kalman filter tracks a drifting hedge
 ratio when OLS cannot, and — the part textbooks skip — how pairs trades are
 actually run, costed, and killed in practice.
 
-All worked numbers come from the bundled data and match
-`data/golden/golden.json`, so you can reproduce every figure by running the
-demo or tests in any of the four languages.
+Worked numbers come from the bundled data. Statistics and the full-sample
+backtest match `data/golden/golden.json`; the holdout, rolling and bootstrap
+numbers in §9 are the Python demo's output. The data is synthetic, so none
+of it is evidence that a strategy works.
 
 ---
 
@@ -167,10 +168,16 @@ The Augmented Dickey–Fuller test asks: does ρ = 0 in
 Subtracting $y_{t-1}$ from the AR representation maps "unit root" to
 ρ = 0 and "stationary" to ρ < 0 (ρ = φ − 1 in the AR(1) case). The lagged
 differences ("augmentation") soak up short-run autocorrelation so that $e_t$
-is approximately white; this implementation pins **p = maxlag, default 1, no
-automatic lag selection** — automatic selection (AIC etc.) is common but
-makes results depend on the selector, which is fatal for cross-language
-reproducibility. The statistic is the plain OLS t-ratio on ρ:
+is approximately white; this implementation pins **p = maxlag, default 1**. An opt-in
+`select_lag(y, max_lag, nvars)` picks the lag with the smallest BIC on a
+common sample (ties go to the smaller lag), pinned tightly enough that every
+port agrees. Fixing the lag matters because the verdict can depend on it: with
+strongly negative moving-average errors (MA -0.5 and -0.8, deliberately
+strong) the review measured a fixed lag-1 test rejecting 31–33% and 95–97% of
+the time at a nominal 5% (H1). `engle_granger_both` also runs the test with y
+and x swapped and calls the pair cointegrated only if both reject, because the
+two normalisations can disagree (up to 32% of the time in the review).
+The statistic is the plain OLS t-ratio on ρ:
 
 ```math
 t_{ADF} = \hat{\rho} / \operatorname{se}(\hat{\rho})
@@ -494,6 +501,10 @@ Worked numbers (golden `kalman_beta_*`): filtered β = 1.69206 at day 500
 (true 1.7), 1.10012 at day 1200 (true 1.1), 1.15319 at day 1499. Tracking
 RMSE from day 300: **0.024 for the Kalman filter vs 0.288 for static OLS**.
 
+That is a statement about estimating beta, and nothing more. It does not say
+a strategy that trades the filtered spread makes money, and in the review it
+did not: see §9.4.
+
 ### 8.3 Why the Joseph form is pinned
 
 The textbook covariance update $P = (I-KH)P_{\text{pred}}$ is algebraically
@@ -538,9 +549,16 @@ cost is model dependence: mis-set δ or r and the z-scores are mis-scaled.
 5. **Execution lag (pinned): a signal at the day-t close trades at the day
    t+1 close.** Backtests that fill at the same close they signalled on
    embed look-ahead and can turn a losing strategy into a paper star.
-   Position sizing is equal-dollar per leg (capital/2 each side), exactly
-   dollar-neutral at entry; β lives in the *signal*, not the leg sizes, and
-   quantities are then frozen for the life of the trade. A signal on the
+   Position sizing (v1.2.0) is `beta_hedged` by default: with
+   `u = capital / (y + β x)` at the execution close, hold `u` of y against
+   `−β u` of x, so gross notional is `capital` and the legs move with the
+   spread. Worked example: y = 100, x = 50, β = 1.6, capital 1,000,000 gives
+   u = 1,000,000 / 180 = 5,555.6, so 5,555.6 units of y (555,556) against 8,889
+   units of x (444,444). This is not dollar-neutral. The old equal-dollar rule
+   (`capital/2` per leg) is exactly neutral at entry but trades a spread other
+   than the tested one whenever β ≠ y/x: on `y = 150 + 0.5x` over 100 seeds
+   the review measured Sharpe 0.43 equal-dollar vs 1.76 beta-hedged (C5).
+   Quantities are frozen for the life of the trade. A signal on the
    last available close is *discarded*, never executed and force-closed at
    the same close: a rolling daily re-run therefore never reports a
    phantom zero-day round trip that paid two costs.
@@ -550,21 +568,41 @@ cost is model dependence: mis-set δ or r and the z-scores are mis-scaled.
 Each execution pays (cost_bps + slippage_bps) on traded notional — here
 1.5 bps combined, charged on ~capital of notional at entry and again at exit,
 so ~3 bps of capital per round trip. That sounds small; it is not. The
-in-sample backtest turns over 41.9× capital, so costs consume ~0.6% of
-capital — roughly a tenth of the gross P&L. Stat-arb strategies live or die
+in-sample backtest turns over 37.9× capital, so costs consume ~0.6% of
+capital — under a tenth of the gross P&L (6.81% net in the demo). Stat-arb strategies live or die
 on the cost line: gross Sharpe is easy, net Sharpe is the job. Real desks
 additionally face borrow fees on the short leg, ticket costs, and market
 impact that grows with size (§10).
 
-### 9.3 Walk-forward honesty
+### 9.3 Out-of-sample honesty: a holdout, and a rolling version
 
 Fitting and evaluating on the same data flatters everything: β is tuned to
-the very sample it trades. The pinned protocol estimates the hedge on the
-first 60% and trades the last 40% with parameters frozen; the OOS z-score
-warms up inside its own segment so no information crosses the split.
+the very sample it trades. `walk_forward` estimates the hedge on the first
+60% and trades the last 40% with parameters frozen; the OOS z-score warms up
+inside its own segment so no information crosses the split. Despite the name
+this is a **single holdout**: one fit, one split (kept for compatibility, as
+renaming it would break every caller).
 
-Bundled result: in-sample Sharpe **+1.49** becomes out-of-sample **−1.37**.
-Part of that is ordinary estimation decay; most of it is the next subsection.
+`rolling_walk_forward(y, x, config, train, test)` is the rolling procedure:
+fit OLS on `[k·test, k·test+train)`, trade the next `test` days with a
+z-score warmed up on earlier days only, force-flat at each block end, and
+stitch the blocks' P&L into one equity curve. A block whose fit gives β ≤ 0
+stays flat (`skipped`) rather than raising.
+
+Bundled results (demo, synthetic data, `config.json` limits on):
+
+| Procedure | Return | Sharpe | Max DD |
+|---|---|---|---|
+| Single holdout, in-sample | 6.81% | 1.40 | 0.87% |
+| Single holdout, out-of-sample | −4.91% | −0.78 | 6.86% |
+| Rolling (train 500, test 100, 10 blocks) | −0.29% | −0.05 | 5.55% |
+
+Rolling Sharpe −0.05 has a 95% block-bootstrap interval of [−1.11, 1.45] and
+P(true Sharpe > 0) = 0.46: the data cannot tell it from zero. And it is
+flattered. The last three of the 10 blocks (indices 7–9) fitted β ≤ 0 (a fit that
+straddles the break) and sat flat, so almost a third of the blocks
+contributed nothing, neither gain nor loss. An in-sample Sharpe also has wide error: 1.49 (v1.1.0 settings) had a
+standard error near 0.77 from 21 trades and 75% flat days (H4).
 
 ### 9.4 Regime breaks: why pairs die
 
@@ -578,13 +616,30 @@ mean any more*; a mean-reversion system will keep averaging into it.
 
 What the toolkit shows honestly:
 
-- The static-hedge backtest across the break loses money (full-sample golden
-  metrics: total return **−1.91%**, Sharpe **−0.137**, max drawdown
-  **14.26%**, 31 trades) — the stop-loss at |z| = 4 triggers in the broken
-  regime and caps the damage, which is exactly its job.
-- The Kalman filter *adapts* β through the break (§8) — the right tool if
-  the relationship survives with a new ratio; no hedge-ratio filter helps if
-  the relationship is simply gone.
+- A static hedge across the break loses money out of sample. The z-stop
+  alone did not cap that: in the v1.1.0 run it cost $17k on day 1053, and
+  re-entry on day 1059 lost $124k unstopped, more than the whole net loss
+  (C4). The reason is mechanical: the rolling mean follows the break, so z
+  decays and the stop cannot fire. What helped was a stop on P&L, a maximum
+  hold and a cool-down (§10): out-of-sample −4.91% with max drawdown 6.86%,
+  against −12.35% and 15.28% with none. That is a smaller loss, still a loss.
+  Across 300 seeds with the break the v1.1.0 out-of-sample Sharpe was −1.9,
+  negative 99.7% of the time; the limited version has not been re-run that way.
+- The Kalman filter tracks β through the break (§8), which is not the same as
+  trading profitably through it. Trading the causal filtered spread on days
+  150–1049 gave Sharpe 0.05 (35 trades), against 1.49 for an estimated
+  static hedge (fitted on days 0–899, so a different window) and 1.72 with the
+  true β; one seed. Measured mechanism: `r = 1e-3` is about 2,800 times below
+  the spread variance (2.82), so β absorbs part of the signal; β error times
+  price (about 0.025 × 100) exceeds the spread sd (1.68); the filtered spread's
+  correlation with the true one is 0.18; innovation z has sd 0.65–0.70, not 1
+  (C3). The library therefore does not trade the Kalman hedge. No hedge-ratio
+  filter helps if the relationship is simply gone.
+- A single-window test cannot be the gate. EG on days 1050–1499 says
+  cointegrated (t = −9.16) across the break, while 900–1499 correctly does
+  not (H2). `cusum_break_test` (Python, `statarb.research`) on the spread
+  gives p = 0.149 in-sample and 0.012 over the full sample, with the largest
+  shift near day 1057.
 
 Diagnostics that flag a dying pair before the P&L does: half-life estimates
 drifting up on rolling windows, rolling ADF t-stats decaying toward zero,
@@ -612,11 +667,16 @@ meant to be called:
    `rolling_zscore(spread(...), W)` where W ≈ several half-lives, or run
    `kalman_hedge` and use its `beta` path if the ratio is expected to drift.
    Never re-estimate the hedge on the data you evaluate.
-4. **Evaluate honestly.** `walk_forward` with the same `BacktestConfig` you
-   would trade: costs at or above what your broker charges, `stop_z` set
-   where a dislocation is more likely a break than a bargain. Judge the
-   out-of-sample segment only; the bundled example's in-sample Sharpe +1.49
-   versus out-of-sample −1.37 is the lesson.
+4. **Evaluate honestly.** `rolling_walk_forward` (or at least the single
+   holdout `walk_forward`) with the same `BacktestConfig` you would trade:
+   costs at or above what your broker charges, `stop_z` set where a
+   dislocation is more likely a break than a bargain. Judge the
+   out-of-sample result only, with an interval
+   (`block_bootstrap_sharpe_ci`) and, if you chose among many pairs or
+   settings, `deflated_sharpe`. Check `cost_sensitivity`: the v1.1.0
+   in-sample Sharpe was 1.49 at 1.5 bps, 0.74 at 10 and −0.10 at 20 (H5).
+   When screening many pairs, control the false-discovery rate
+   (`benjamini_hochberg`, built into `scan_pairs`).
 5. **Run and monitor.** Each day append the new close, re-run the z-score,
    act on the *pending* order the state machine emits for the next close,
    and re-run the diagnostics on a trailing window: rolling ADF t drifting
@@ -625,7 +685,7 @@ meant to be called:
 6. **Know the limits.** Returns are on gross notional (no compounding, no
    financing, no borrow), one-day execution lag only, no calendar, no
    impact model; size for the fact that everyone else with the same
-   textbook holds the same spread (§10).
+   textbook holds the same spread (§10). §9.7 lists what is missing.
 
 ### 9.6 Equity vs FX conventions
 
@@ -640,18 +700,64 @@ meant to be called:
   are naturally symmetric so dollar-neutrality is automatic, but carry can
   dominate a slow spread's P&L and must be modelled.
 
+### 9.7 Limitations and what this is not
+
+- **No real data.** Everything here runs on three generated files, and the
+  pair's generator is the model under test. Over 300 seeds without a break,
+  out-of-sample Sharpe is 1.44: that recovers the generator, which is not
+  evidence of edge (C1).
+- **Not tradable as is.** No borrow, impact, capacity, locate or calendar
+  logic; fractional quantities; both legs at one close; a flat 1.5 bps.
+- **Not low latency.** Batch functions allocate and the z-score is O(T·W).
+  `RollingZ` and `KalmanStep` are O(1) per update, but `RollingZ` keeps
+  running sums and drifts about 5e−8 after 50,000 updates at a level of 1e4,
+  so it is not bitwise equal to batch; batch is the trading reference.
+  There are no benchmarks and no order or feed layer.
+- **Research helpers are judgement aids.** `statarb.research` (Python only)
+  has no universe, no survivorship handling and no preregistered holdout. In
+  the v1.1.0 review, 32 of 780 independent random-walk pairs passed EG; their
+  mean in-sample Sharpe was 0.76 and out-of-sample −0.16 (C2).
+- **Economics, labelled synthetic** (300 seeds of this repo's generator, best
+  case; `review/2026-11-05/REVIEW.md` addendum). No-break, zero-cost return
+  1.70% a year on gross notional, 5.1 round trips a year, in the market 23%
+  of days. Break-even cost 16.7 bps a side; net 1.55% at 1.5 bps and 0.69% at
+  10. A break window returns −12.6% on average (5th percentile −18.2%), so
+  break-even is one break per about 10.5 years per pair: a small steady gain
+  and a rare large loss, the shape of a short-volatility trade. These
+  describe the generator, not a market. No real-market profit has been
+  measured.
+
 ---
 
 ## 10. Risk management of statistical arbitrage
 
-**Stop-losses.** A z-score stop (|z| ≥ 4 here) is a model-disagreement
+**Stops and limits.** A z-score stop (|z| ≥ 4 here) is a model-disagreement
 trigger, not a price stop: it fires when the spread does something the
 stationarity assumption says should almost never happen, which is evidence
-the assumption is wrong. The bundled break regime shows stops converting an
-unbounded structural loss into a capped one. The cost is whipsaw: some stops
-fire at what was, in hindsight, the best entry ever. Accept it; the
-alternative is Kodak/Fuji with leverage. Time stops (exit after k×half-life
-regardless) are a common complement.
+the assumption is wrong. It is not a loss limit. In a break the rolling mean
+follows the spread, z shrinks and the stop may never fire (§9.4). The
+cost is whipsaw too: some stops fire at what was, in hindsight, the best
+entry ever.
+
+v1.2.0 adds three explicit limits, all off by default:
+
+- `pnl_stop_frac`: at the signal step, if open P&L (net of costs so far) is
+  at or below −frac × capital, exit as a stop. It is checked before the z
+  rules and takes priority.
+- `max_hold_days`: exit when `t − entry_day ≥ max_hold_days` (a time stop,
+  not marked `stopped`).
+- `cooldown_days`: after a stopped exit on day e, ignore entry signals while
+  `t < e + cooldown_days`.
+
+`data/config.json` uses 0.02, 60 and 20. They are round numbers fixed before
+looking at the out-of-sample window, not tuned, and they have been tried on
+one synthetic pair. Their measured effect is in §9.4: the loss shrank, it did
+not disappear.
+
+Worked example of the P&L stop: capital 1,000,000 and `pnl_stop_frac = 0.02`
+means a stop once an open trade is down 20,000 after costs so far. If at the
+day-t close it is down 21,300, a stop is scheduled and executes at the day
+t+1 close, so the realised loss can be larger than 20,000.
 
 **Capacity.** Each pair's edge is a few basis points of reversion on limited
 liquid size; impact costs grow superlinearly in participation. Scaling a
@@ -676,8 +782,8 @@ signals; and backtests on tranquil samples cannot show any of this.
 
 **Model risk controls in this codebase**, in miniature: refusing to trade
 non-cointegrated pairs (the spurious case is diagnosed and no backtest is
-run), walk-forward evaluation as the default honesty check, stop-losses in
-the state machine, and an accounting identity test (equity change ≡ Σpnl −
+run), out-of-sample evaluation as the default honesty check, explicit P&L,
+time and cool-down limits in the state machine, and an accounting identity test (equity change ≡ Σpnl −
 Σcosts at 1e−10) so the backtester itself cannot quietly leak money.
 
 ---
@@ -734,7 +840,7 @@ the state machine, and an accounting identity test (equity change ≡ Σpnl −
 
 ---
 
-## 12. Interview-style Q&A
+## 12. Knowledge check
 
 **Q1. Why can't you regress one stock price on another and trust the
 t-statistic?**
@@ -781,7 +887,8 @@ it re-estimates from scratch each day. The Kalman filter is recursive
 parameter (δ via Q = δ/(1−δ)·I), provides an uncertainty estimate P around
 the hedge, and emits self-normalised innovation z-scores. As δ → 0 it
 recovers static OLS, so rolling/static OLS is a special case, not a
-competitor.
+competitor. Caveat: this is about estimating β (RMSE 0.024 vs 1.1–1.2 for
+rolling OLS in the review). Trading the filtered spread did not work (§9.4).
 
 **Q7. What is the Joseph form and why bother on a 2×2 problem?**
 $P = (I-KH)P_{\text{pred}}(I-KH)' + KrK'$ — algebraically identical to
@@ -807,7 +914,7 @@ was selected from a large screen: no economic linkage story, OOS behaviour
 inconsistent with in-sample from day one. (c) Crowding/deleveraging — the
 spread is statistically intact but other holders are unwinding: widening
 happens fast, on volume, correlated with other quant spreads (August 2007
-pattern). Stops address (a) and (c); selection discipline addresses (b).
+pattern). Explicit loss limits limit the damage of (a) and (c) but, as §9.4 measures, do not remove it; a z-stop alone may not fire at all in a break. Selection discipline addresses (b).
 
 **Q10. What actually happened in August 2007, and what is the portable
 lesson?**

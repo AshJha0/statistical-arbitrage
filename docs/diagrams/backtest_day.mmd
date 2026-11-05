@@ -15,5 +15,5 @@ sequenceDiagram
     BT->>EQ: E_t = E_(t-1) + pnl_t - cost_t
     alt t < T-1
         BT->>SM: 3. evaluate z_t, set at most one pending order
-        Note over SM: FLAT: entry if entry_z <= |z| < stop_z<br/>in position: stop if |z| >= stop_z, exit if |z| <= exit_z<br/>NaN z: no action
+        Note over SM: in position, in this order:<br/>1 P&L stop (open P&L <= -pnl_stop_frac x capital): stop<br/>2 z-stop (|z| >= stop_z): stop<br/>3 max_hold_days reached: exit (not a stop)<br/>4 |z| <= exit_z: exit<br/>FLAT: entry if entry_z <= |z| < stop_z and past the cool-down<br/>(cooldown_days after a stopped exit)<br/>NaN z: no action
     end

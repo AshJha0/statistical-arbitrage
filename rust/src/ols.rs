@@ -96,9 +96,7 @@ pub fn ols_multi(y: &[f64], x_cols: &[Vec<f64>], intercept: bool) -> Result<OlsR
             )));
         }
     }
-    if !y.iter().all(|v| v.is_finite())
-        || !x_cols.iter().all(|c| c.iter().all(|v| v.is_finite()))
-    {
+    if !y.iter().all(|v| v.is_finite()) || !x_cols.iter().all(|c| c.iter().all(|v| v.is_finite())) {
         return Err(StatarbError::NonFinite(
             "inputs must be finite (no NaN/inf)".to_string(),
         ));

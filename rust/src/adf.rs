@@ -245,6 +245,47 @@ pub fn adf_test(y: &[f64], maxlag: usize, nvars: usize) -> Result<AdfResult> {
     })
 }
 
+/// Lag in `0..=max_lag` with the smallest BIC, for use with [`adf_test`].
+///
+/// Every candidate is fitted on the SAME rows `t = max_lag+1 .. T-1`, so the
+/// BICs are comparable: `BIC(p) = n ln(RSS_p / n) + (2 + p) ln n` with
+/// `n = T - 1 - max_lag`. A tie goes to the smaller lag.
+///
+/// # Errors
+///
+/// Same validation as `adf_test(y, max_lag, nvars)`.
+pub fn select_lag(y: &[f64], max_lag: usize, nvars: usize) -> Result<usize> {
+    adf_test(y, max_lag, nvars)?; // shared validation
+    let m = max_lag;
+    let t_len = y.len();
+    let dy: Vec<f64> = y.windows(2).map(|w| w[1] - w[0]).collect();
+    let lhs = &dy[m..];
+    let n = lhs.len() as f64;
+    let mut cols: Vec<Vec<f64>> = vec![y[m..t_len - 1].to_vec()];
+    let (mut best_lag, mut best_bic) = (0usize, f64::INFINITY);
+    for p in 0..=m {
+        if p > 0 {
+            cols.push(dy[m - p..dy.len() - p].to_vec());
+        }
+        let fit = ols_multi(lhs, &cols, true)?;
+        let mut rss = 0.0_f64;
+        for &e in &fit.resid {
+            rss += e * e;
+        }
+        let fit_term = if rss > 0.0 {
+            n * (rss / n).ln()
+        } else {
+            f64::NEG_INFINITY
+        };
+        let bic = fit_term + (2 + p) as f64 * n.ln();
+        if p == 0 || bic < best_bic {
+            best_lag = p;
+            best_bic = bic;
+        }
+    }
+    Ok(best_lag)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,8 +305,14 @@ mod tests {
     fn pvalue_clamps_at_bounds() {
         assert_eq!(interpolate_pvalue(-50.0, 1, None).unwrap(), PVALUE_MIN);
         assert_eq!(interpolate_pvalue(50.0, 1, None).unwrap(), PVALUE_MAX);
-        assert_eq!(interpolate_pvalue(f64::NEG_INFINITY, 1, None).unwrap(), PVALUE_MIN);
-        assert_eq!(interpolate_pvalue(f64::INFINITY, 1, None).unwrap(), PVALUE_MAX);
+        assert_eq!(
+            interpolate_pvalue(f64::NEG_INFINITY, 1, None).unwrap(),
+            PVALUE_MIN
+        );
+        assert_eq!(
+            interpolate_pvalue(f64::INFINITY, 1, None).unwrap(),
+            PVALUE_MAX
+        );
         assert!(matches!(
             interpolate_pvalue(f64::NAN, 1, None),
             Err(StatarbError::NonFinite(_))
@@ -284,10 +331,22 @@ mod tests {
 
     #[test]
     fn asymptotic_table_pinned() {
-        assert_eq!(critical_values(1, None).unwrap(), [-3.43035, -2.86154, -2.56677]);
-        assert_eq!(critical_values(2, None).unwrap(), [-3.89644, -3.33613, -3.04445]);
-        assert_eq!(critical_values(3, None).unwrap(), [-4.29374, -3.74066, -3.45218]);
-        assert_eq!(response_surface(1).unwrap()[1], [-2.86154, -2.8903, -4.234, -40.040]);
+        assert_eq!(
+            critical_values(1, None).unwrap(),
+            [-3.43035, -2.86154, -2.56677]
+        );
+        assert_eq!(
+            critical_values(2, None).unwrap(),
+            [-3.89644, -3.33613, -3.04445]
+        );
+        assert_eq!(
+            critical_values(3, None).unwrap(),
+            [-4.29374, -3.74066, -3.45218]
+        );
+        assert_eq!(
+            response_surface(1).unwrap()[1],
+            [-2.86154, -2.8903, -4.234, -40.040]
+        );
         assert_eq!(response_surface(3).unwrap()[0][3], 47.433);
     }
 
@@ -322,8 +381,14 @@ mod tests {
         let s: Vec<f64> = (0..40)
             .map(|t| 0.9_f64.powi(t) + 0.05 * (2.1 * t as f64).sin())
             .collect();
-        assert!(matches!(adf_test(&s[..21], 1, 1), Err(StatarbError::TooShort(_))));
-        assert!(matches!(adf_test(&s[..15], 1, 1), Err(StatarbError::TooShort(_))));
+        assert!(matches!(
+            adf_test(&s[..21], 1, 1),
+            Err(StatarbError::TooShort(_))
+        ));
+        assert!(matches!(
+            adf_test(&s[..15], 1, 1),
+            Err(StatarbError::TooShort(_))
+        ));
         let res = adf_test(&s[..22], 1, 1).unwrap();
         assert_eq!(res.nobs, 20);
         let e20 = -2.86154 - 2.8903 / 20.0 - 4.234 / 400.0 - 40.040 / 8000.0;
@@ -333,8 +398,14 @@ mod tests {
             adf_test(&s, MAX_LAG + 1, 1),
             Err(StatarbError::InvalidParam(_))
         ));
-        assert!(matches!(adf_test(&s, MAX_LAG, 1), Err(StatarbError::TooShort(_))));
-        assert!(matches!(adf_test(&s, usize::MAX, 1), Err(StatarbError::InvalidParam(_))));
+        assert!(matches!(
+            adf_test(&s, MAX_LAG, 1),
+            Err(StatarbError::TooShort(_))
+        ));
+        assert!(matches!(
+            adf_test(&s, usize::MAX, 1),
+            Err(StatarbError::InvalidParam(_))
+        ));
     }
 
     #[test]

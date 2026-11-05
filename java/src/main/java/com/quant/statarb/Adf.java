@@ -258,6 +258,55 @@ public final class Adf {
         return test(y, maxlag, 1);
     }
 
+    /**
+     * Lag in {@code 0..maxLag} with the smallest BIC, for use with {@link #test}.
+     *
+     * <p>Every candidate is fitted on the SAME rows {@code t = maxLag+1 .. T-1}
+     * so the BICs are comparable: {@code BIC(p) = n ln(RSS_p / n) + (2+p) ln n}
+     * with {@code n = T - 1 - maxLag}. A tie goes to the smaller lag.
+     *
+     * @param y      level series
+     * @param maxLag largest candidate lag
+     * @param nvars  1, 2 or 3 (validation only; it does not affect the result)
+     * @return the selected lag
+     * @throws IllegalArgumentException with the validation of
+     *     {@code test(y, maxLag, nvars)}
+     */
+    public static int selectLag(double[] y, int maxLag, int nvars) {
+        test(y, maxLag, nvars); // shared validation
+        int m = maxLag;
+        int tLen = y.length;
+        int n = tLen - 1 - m;
+        double[] dy = new double[tLen - 1];
+        for (int t = 0; t < tLen - 1; t++) {
+            dy[t] = y[t + 1] - y[t];
+        }
+        double[] lhs = new double[n];
+        for (int r = 0; r < n; r++) {
+            lhs[r] = dy[m + r];
+        }
+        int bestLag = 0;
+        double bestBic = Double.POSITIVE_INFINITY;
+        for (int p = 0; p <= m; p++) {
+            double[][] design = new double[n][1 + p];
+            for (int r = 0; r < n; r++) {
+                design[r][0] = y[m + r];
+                for (int i = 1; i <= p; i++) {
+                    design[r][i] = dy[m + r - i];
+                }
+            }
+            double[] e = Ols.fit(lhs, design, true).resid();
+            double rss = LinAlg.dot(e, e);
+            double fitTerm = rss > 0.0 ? n * Math.log(rss / n) : Double.NEGATIVE_INFINITY;
+            double bic = fitTerm + (2 + p) * Math.log(n);
+            if (bic < bestBic || p == 0) {
+                bestLag = p;
+                bestBic = bic;
+            }
+        }
+        return bestLag;
+    }
+
     /** True when every entry equals the first (false for an empty array). */
     static boolean isConstant(double[] y) {
         if (y.length == 0) {

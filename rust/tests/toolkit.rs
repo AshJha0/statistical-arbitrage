@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use statarb::{
-    adf_test, engle_granger, half_life, interpolate_pvalue, johansen_trace, kalman_hedge,
-    load_csv, ols, ols_multi, rolling_zscore, spread, StatarbError,
+    adf_test, engle_granger, half_life, interpolate_pvalue, johansen_trace, kalman_hedge, load_csv,
+    ols, ols_multi, rolling_zscore, spread, StatarbError,
 };
 
 fn data_dir() -> PathBuf {
@@ -97,7 +97,7 @@ fn ols_error_paths() {
     ));
     // constant regressor next to the intercept -> collinear
     assert!(matches!(
-        ols(&y, &vec![7.0; 20], true),
+        ols(&y, &[7.0; 20], true),
         Err(StatarbError::Singular(_))
     ));
 }
@@ -312,7 +312,9 @@ fn johansen_error_paths() {
         Err(StatarbError::InvalidParam(_))
     ));
     // n outside {2,3}
-    let four: Vec<Vec<f64>> = (0..100).map(|t| vec![y[t], x[t], y[t] * 2.0, x[t] * 2.0]).collect();
+    let four: Vec<Vec<f64>> = (0..100)
+        .map(|t| vec![y[t], x[t], y[t] * 2.0, x[t] * 2.0])
+        .collect();
     assert!(matches!(
         johansen_trace(&four, 1),
         Err(StatarbError::InvalidParam(_))

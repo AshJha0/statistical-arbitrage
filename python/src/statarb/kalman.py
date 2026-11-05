@@ -95,33 +95,18 @@ def kalman_hedge(
         raise ValueError("observation variance r must be > 0 and finite")
 
     T = y.shape[0]
-    q = delta / (1.0 - delta)
-    Q = q * np.eye(2)
-    I2 = np.eye(2)
-    s = np.zeros(2)
-    P = P0_SCALE * np.eye(2)
-
+    step = KalmanStep(delta, r)
     alpha = np.empty(T)
     beta = np.empty(T)
     z = np.empty(T)
     innov = np.empty(T)
     svar = np.empty(T)
 
+    # One recursion for batch and streaming, so the two cannot diverge.
     for t in range(T):
-        P_pred = P + Q
-        h = np.array([1.0, x[t]])
-        e = y[t] - float(h @ s)
-        S = float(h @ P_pred @ h) + r
-        K = (P_pred @ h) / S
-        s = s + K * e
-        ikh = I2 - np.outer(K, h)
-        P = ikh @ P_pred @ ikh.T + r * np.outer(K, K)  # Joseph form
-        P = 0.5 * (P + P.T)
-        alpha[t] = s[0]
-        beta[t] = s[1]
-        innov[t] = e
-        svar[t] = S
-        z[t] = e / np.sqrt(S)
+        alpha[t], beta[t], z[t] = step.update(x[t], y[t])
+        innov[t] = step.innovation
+        svar[t] = step.s_var
 
     return KalmanResult(
         alpha=alpha,
@@ -129,5 +114,77 @@ def kalman_hedge(
         z=z,
         innovation=innov,
         s_var=svar,
-        final_cov=P,
+        final_cov=step.covariance(),
     )
+
+
+class KalmanStep:
+    """Streaming form of :func:`kalman_hedge`: scalar state, O(1) per update.
+
+    Same model and prior.  :func:`kalman_hedge` loops over this class, so the
+    two agree exactly here; ports must keep the scalar order of ``update``.
+    """
+
+    __slots__ = ("_q", "_r", "_a", "_b", "_p00", "_p01", "_p11",
+                 "innovation", "s_var")
+
+    def __init__(self, delta: float = 1.0e-4, r: float = 1.0e-3) -> None:
+        if not (0.0 < delta < 1.0):
+            raise ValueError("delta must lie strictly inside (0, 1)")
+        if not (r > 0.0 and math.isfinite(r)):
+            raise ValueError("observation variance r must be > 0 and finite")
+        self._q = delta / (1.0 - delta)
+        self._r = float(r)
+        self._a = 0.0
+        self._b = 0.0
+        self._p00 = P0_SCALE
+        self._p01 = 0.0
+        self._p11 = P0_SCALE
+        self.innovation = 0.0  # e_t of the latest update
+        self.s_var = 0.0       # S_t of the latest update
+
+    def covariance(self) -> np.ndarray:
+        """Current 2x2 posterior covariance."""
+        return np.array([[self._p00, self._p01], [self._p01, self._p11]])
+
+    def update(self, x: float, y: float) -> tuple[float, float, float]:
+        """Filter one observation; return (alpha, beta, z).
+
+        Raises:
+            ValueError: non-finite x or y (state is left unchanged).
+        """
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ValueError("inputs must be finite (no NaN/inf)")
+        x = float(x)
+        y = float(y)
+        r = self._r
+        p00 = self._p00 + self._q
+        p01 = self._p01
+        p11 = self._p11 + self._q
+        e = y - (self._a + x * self._b)
+        ph0 = p00 + p01 * x          # P_pred H'
+        ph1 = p01 + p11 * x
+        S = ph0 + x * ph1 + r
+        k0 = ph0 / S
+        k1 = ph1 / S
+        self._a += k0 * e
+        self._b += k1 * e
+        # Joseph form with A = I - K H = [[a00, a01], [a10, a11]]
+        a00 = 1.0 - k0
+        a01 = -k0 * x
+        a10 = -k1
+        a11 = 1.0 - k1 * x
+        b00 = a00 * p00 + a01 * p01  # B = A P_pred
+        b01 = a00 * p01 + a01 * p11
+        b10 = a10 * p00 + a11 * p01
+        b11 = a10 * p01 + a11 * p11
+        n00 = b00 * a00 + b01 * a01 + r * (k0 * k0)
+        n01 = b00 * a10 + b01 * a11 + r * (k0 * k1)
+        n10 = b10 * a00 + b11 * a01 + r * (k1 * k0)
+        n11 = b10 * a10 + b11 * a11 + r * (k1 * k1)
+        self._p00 = n00
+        self._p01 = 0.5 * (n01 + n10)
+        self._p11 = n11
+        self.innovation = e
+        self.s_var = S
+        return self._a, self._b, e / math.sqrt(S)

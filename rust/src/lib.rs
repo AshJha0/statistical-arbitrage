@@ -3,7 +3,7 @@
 //! Rust port of the `statarb` reference package (repository
 //! `statistical-arbitrage`):
 //! cointegration diagnostics, a Kalman-filter dynamic hedge, and a
-//! dollar-neutral pairs backtest. Every algorithm follows the pinned
+//! pairs backtest. Every algorithm follows the pinned
 //! cross-language contract in `API_SPEC.md`; agreement with the Python
 //! reference is enforced by the golden suite in
 //! `../data/golden/golden.json`.
@@ -41,18 +41,19 @@ pub mod ols;
 pub mod signals;
 
 pub use adf::{
-    adf_test, critical_values, interpolate_pvalue, response_surface, AdfResult, MAX_LAG,
-    MIN_NOBS,
+    adf_test, critical_values, interpolate_pvalue, response_surface, select_lag, AdfResult,
+    MAX_LAG, MIN_NOBS,
 };
 pub use backtest::{
-    backtest_pair, compute_metrics, walk_forward, BacktestConfig, BacktestResult, Metrics,
-    Trade, WalkForwardResult, SPLIT_EPS,
+    backtest_pair, compute_metrics, max_abs_zscore, rolling_walk_forward, walk_forward,
+    BacktestConfig, BacktestResult, Metrics, RollingBlock, RollingWalkForwardResult, Sizing, Trade,
+    WalkForwardResult, SPLIT_EPS,
 };
 pub use data_io::{load_config, load_csv};
-pub use engle_granger::{engle_granger, EgResult};
+pub use engle_granger::{engle_granger, engle_granger_both, EgBothResult, EgResult};
 pub use error::{Result, StatarbError};
 pub use johansen::{johansen_trace, trace_crit_95, JohansenResult};
-pub use kalman::{kalman_hedge, KalmanResult};
+pub use kalman::{kalman_hedge, KalmanResult, KalmanStep};
 pub use linalg::{cholesky_lower, jacobi_eigh};
 pub use ols::{ols, ols_multi, OlsResult};
-pub use signals::{half_life, rolling_zscore, spread};
+pub use signals::{half_life, rolling_zscore, spread, RollingZ};

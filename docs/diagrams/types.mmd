@@ -25,6 +25,11 @@ classDiagram
         +adf : ADFResult
         +cointegrated(alpha) bool
     }
+    class EGBothResult {
+        +y_on_x : EGResult
+        +x_on_y : EGResult
+        +cointegrated(alpha) bool
+    }
     class JohansenResult {
         +eigenvalues : vector
         +trace_stats : vector
@@ -41,6 +46,12 @@ classDiagram
         +s_var : vector
         +final_cov : matrix2x2
     }
+    class KalmanStep {
+        +update(x, y) alpha, beta, z
+    }
+    class RollingZ {
+        +update(s) z
+    }
     class BacktestConfig {
         +window : int
         +entry_z : double
@@ -49,6 +60,10 @@ classDiagram
         +cost_bps : double
         +slippage_bps : double
         +capital : double
+        +sizing : beta_hedged or equal_dollar
+        +pnl_stop_frac : double
+        +max_hold_days : int
+        +cooldown_days : int
     }
     class Trade {
         +entry_day : int
@@ -72,9 +87,28 @@ classDiagram
         +insample : BacktestResult
         +oos : BacktestResult
     }
+    class RollingBlock {
+        +start : int
+        +end : int
+        +alpha : double
+        +beta : double
+        +skipped : bool
+        +result : BacktestResult
+    }
+    class RollingWalkForwardResult {
+        +blocks : List~RollingBlock~
+        +start_day : int
+        +equity : vector
+        +trades : List~Trade~
+        +metrics : map
+    }
     EGResult --> ADFResult : nests
     EGResult ..> OLSResult : built from
     ADFResult ..> OLSResult : t-stat from
+    EGBothResult --> EGResult : two directions
     BacktestResult --> Trade : collects
     WalkForwardResult --> BacktestResult : IS + OOS
+    RollingWalkForwardResult --> RollingBlock : blocks
+    RollingBlock --> BacktestResult : block backtest
     BacktestResult ..> BacktestConfig : parameterised by
+    KalmanResult ..> KalmanStep : batch loops over

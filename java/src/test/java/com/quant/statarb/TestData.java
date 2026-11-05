@@ -78,11 +78,8 @@ final class TestData {
         return java.util.Arrays.copyOfRange(a, from, to);
     }
 
-    /** The backtest config built from the bundled config.json. */
+    /** The backtest config built from the bundled config.json (limits on, beta_hedged). */
     static Backtest.Config btConfig() {
-        Map<String, Double> c = config();
-        return new Backtest.Config(c.get("window").intValue(), c.get("entry_z"),
-                c.get("exit_z"), c.get("stop_z"), c.get("cost_bps"),
-                c.get("slippage_bps"), c.get("capital"));
+        return Backtest.Config.fromMap(config());
     }
 }

@@ -1,0 +1,19 @@
+# Tooling configuration only (ruff, mypy); the package is used via PYTHONPATH=python/src.
+[tool.ruff]
+line-length = 130
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.ruff.lint.isort]
+known-first-party = ["statarb"]
