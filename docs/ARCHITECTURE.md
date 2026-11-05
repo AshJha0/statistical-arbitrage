@@ -446,9 +446,19 @@ package depends on numpy alone. Counts at this release: Python 1113, C++
 every push to `main` and pull request, Python 3.11 and 3.12 (ruff, mypy,
 pytest); C++ with g++ and clang++ and a separate ASan/UBSan build; Rust with
 `cargo fmt --check`, clippy at `-D warnings` and `cargo test --release
---locked`; Java through Maven; and a job that regenerates `data/` and fails
-if it differs from the committed files. Before v1.2.0 every cross-language
+--locked`; Java through Maven; and a job that regenerates `data/` and runs
+`data/check_regenerated.py`: CSVs and config must match byte for byte, and
+golden values within each case's tolerance, because BLAS builds differ in the
+last digits. The runner is pinned to `ubuntu-24.04`. Before v1.2.0 every cross-language
 claim rested on manual runs.
+
+## 7a. Research studies
+
+`research/` sits outside the four-language contract. Each study has a
+preregistration committed before it runs, a Python script using the library,
+and aggregate results. Raw Yahoo prices stay in a git-ignored cache. Both
+studies so far are null: [pairs](../research/real_data_2026_11/RESULTS.md) and
+[sector-residual](../research/sector_residual_2026_11/RESULTS.md).
 
 ## 8. Performance notes
 

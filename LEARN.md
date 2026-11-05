@@ -702,7 +702,10 @@ meant to be called:
 
 ### 9.7 Limitations and what this is not
 
-- **No real data.** Everything here runs on three generated files, and the
+- **The bundled data is synthetic.** Two preregistered real-data studies in
+  `research/` were both null: pairs had a holdout net Sharpe of -0.42 with
+  about zero gross return, and sector-residual reversal -0.32 with 0.31% a
+  year gross. The rest of this guide runs on three generated files, and the
   pair's generator is the model under test. Over 300 seeds without a break,
   out-of-sample Sharpe is 1.44: that recovers the generator, which is not
   evidence of edge (C1).
@@ -724,8 +727,8 @@ meant to be called:
   10. A break window returns −12.6% on average (5th percentile −18.2%), so
   break-even is one break per about 10.5 years per pair: a small steady gain
   and a rare large loss, the shape of a short-volatility trade. These
-  describe the generator, not a market. No real-market profit has been
-  measured.
+  describe the generator, not a market. The real-data studies found no
+  profit.
 
 ---
 
